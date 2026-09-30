@@ -27,6 +27,17 @@ function useMedia(q: string) {
   return m;
 }
 
+/** The data-theme a host page may set on <html>, kept in sync. */
+function useHostTheme(): string | null {
+  const [t, setT] = useState(() => document.documentElement.getAttribute('data-theme'));
+  useEffect(() => {
+    const obs = new MutationObserver(() => setT(document.documentElement.getAttribute('data-theme')));
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => obs.disconnect();
+  }, []);
+  return t;
+}
+
 function readTheme(): Theme {
   try {
     const t = localStorage.getItem('caseblanket:theme');
@@ -49,7 +60,8 @@ export default function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const wide = useMedia('(min-width: 1180px)');
   const systemDark = useMedia('(prefers-color-scheme: dark)');
-  const dark = theme === 'dark' || (theme === 'system' && systemDark);
+  const hostTheme = useHostTheme();
+  const dark = IS_ARTIFACT ? hostTheme === 'dark' || (hostTheme === null && systemDark) : theme === 'dark' || (theme === 'system' && systemDark);
   const client = useRef<SolverClient | null>(null);
   const viewerRef = useRef<CaseViewer | null>(null);
   const onViewer = useCallback((v: CaseViewer | null) => (viewerRef.current = v), []);
@@ -84,6 +96,8 @@ export default function App() {
   useEffect(() => () => client.current?.dispose(), []);
 
   useEffect(() => {
+    // Inside a host frame the host owns data-theme; only the standalone app sets it.
+    if (IS_ARTIFACT) return;
     const root = document.documentElement;
     if (theme === 'system') root.removeAttribute('data-theme');
     else root.setAttribute('data-theme', theme);
@@ -207,6 +221,7 @@ export default function App() {
               </div>
             )}
           </div>
+          {!IS_ARTIFACT && (
           <button
             type="button"
             className="btn icon"
@@ -216,6 +231,7 @@ export default function App() {
           >
             {theme === 'system' ? '◐' : theme === 'dark' ? '●' : '○'}
           </button>
+          )}
         </div>
       </header>
 
