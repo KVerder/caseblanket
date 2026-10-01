@@ -32,3 +32,28 @@ export function frontier<T extends SpacePoint>(points: T[]): T[] {
 export function spacePoints(designs: Design[], axis: SizeAxis): SpacePoint[] {
   return designs.map((d) => ({ id: d.id, size: sizeOf(d, axis), margin: d.flow.worstMargin }));
 }
+
+/**
+ * Designs worth re-scoring with the 3D simulation, at most `n`. The airflow model's ranking is not
+ * trusted to pre-select (it disagrees with the 3D sim on which designs are coolest), so the pick is
+ * spread over size: the model's own frontier first, then the best few of each size band.
+ */
+export function rescoreCandidates<T extends SpacePoint>(points: T[], n = 20, bands = 8): T[] {
+  const out: T[] = [];
+  const seen = new Set<string>();
+  const add = (p: T) => {
+    if (out.length < n && !seen.has(p.id)) {
+      seen.add(p.id);
+      out.push(p);
+    }
+  };
+  frontier(points).forEach(add);
+  const bySize = [...points].sort((a, b) => a.size - b.size);
+  const per = Math.max(1, Math.ceil((n - out.length) / bands));
+  for (let b = 0; b < bands; b++) {
+    const band = bySize.slice(Math.floor((b * bySize.length) / bands), Math.floor(((b + 1) * bySize.length) / bands));
+    band.sort((x, y) => y.margin - x.margin).slice(0, per).forEach(add);
+  }
+  for (const p of bySize) add(p);
+  return out;
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { COOLERS, GPUS, defaultConfig } from '../src/model/presets';
-import { frontier, spacePoints } from '../src/solver/frontier';
+import { frontier, rescoreCandidates, spacePoints } from '../src/solver/frontier';
 import { solve } from '../src/solver/solve';
 
 describe('design-space frontier', () => {
@@ -51,4 +51,20 @@ describe('design-space frontier with a noise budget', () => {
         }
     });
   }
+});
+
+describe('3D re-scoring candidates', () => {
+  const pts = Array.from({ length: 60 }, (_, i) => ({ id: `d${i}`, size: 10 + (i % 30), margin: ((i * 37) % 17) / 17 }));
+  const pick = rescoreCandidates(pts, 20);
+  it('takes at most n distinct designs, the model frontier first', () => {
+    expect(pick.length).toBe(20);
+    expect(new Set(pick.map((p) => p.id)).size).toBe(20);
+    const f = frontier(pts);
+    expect(pick.slice(0, f.length).map((p) => p.id)).toEqual(f.map((p) => p.id));
+  });
+  it('spreads over the whole size range', () => {
+    const sizes = pick.map((p) => p.size);
+    expect(Math.min(...sizes)).toBe(10);
+    expect(Math.max(...sizes)).toBeGreaterThanOrEqual(36);
+  });
 });

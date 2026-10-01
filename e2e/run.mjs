@@ -223,6 +223,11 @@ for (const [name, vp, opts] of [
   await page.waitForTimeout(300);
   check(/dB\(A\)/.test((await ex.locator('.axis-label').nth(1).textContent()) ?? ''), `${name}: explorer switches to the noise-needed view`);
   await ex.getByRole('radio', { name: /Cooling/ }).click();
+  if (!opts.touch) {
+    await ex.getByRole('button', { name: /Score the frontier in 3D/ }).click();
+    const started = await ex.getByRole('button', { name: /Simulating \d+ of \d+/ }).waitFor({ timeout: 30000 }).then(() => true, () => false);
+    check(started, `${name}: "Score the frontier in 3D" starts simulating about 20 designs`);
+  }
   // Structures (estimates): every row carries cooling, noise, volume and print cost; details expand.
   const st = page.locator('section.structures');
   const stRows = await st.locator('tbody tr').count();

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CfdThermal } from '../cfd/components';
 import type { DesignConfig, LoadProfileId } from '../model/types';
 import { TOPOLOGY_LABELS, type Design } from '../solver/evaluate';
-import { frontier, sizeOf, type SizeAxis } from '../solver/frontier';
+import { frontier, rescoreCandidates, sizeOf, type SizeAxis } from '../solver/frontier';
 import { CfdClient } from '../state/cfdClient';
 import { LOAD_LABEL } from './ResultsPanel';
 
@@ -67,7 +67,16 @@ export function Explorer({
     total: 0,
     results: [],
   });
+  // 3D scores of a spread of designs: the airflow model's ranking disagrees with the 3D sim.
+  const [score, setScore] = useState<{ running: boolean; done: number; total: number; results: Record<string, CfdThermal>; error?: string }>({
+    running: false,
+    done: 0,
+    total: 0,
+    results: {},
+  });
+  const [view3d, setView3d] = useState(false);
   const client = useRef<CfdClient | null>(null);
+  const scoreClient = useRef<CfdClient | null>(null);
   const svg = useRef<SVGSVGElement | null>(null);
   // Draw at the container's own pixel width so text stays at its real size.
   const box = useRef<HTMLDivElement | null>(null);
@@ -84,9 +93,22 @@ export function Explorer({
   // New results invalidate the 3D checks.
   useEffect(() => {
     client.current?.stop();
+    scoreClient.current?.stop();
     setCheck({ running: false, done: 0, total: 0, results: [] });
+    setScore({ running: false, done: 0, total: 0, results: {} });
+    setView3d(false);
   }, [space]);
-  useEffect(() => () => client.current?.stop(), []);
+  useEffect(
+    () => () => {
+      client.current?.stop();
+      scoreClient.current?.stop();
+    },
+    [],
+  );
+  // Every 3D result so far (the quick check and the frontier scoring run the same short simulation).
+  const scored3d: Record<string, CfdThermal> = { ...score.results };
+  for (const r of check.results) scored3d[r.id] ??= r.thermal;
+  const in3d = view3d && yMode === 'margin' && Object.keys(scored3d).length > 0;
 
   const toPt = (d: Design): Pt => {
     const n = d.noise[load];
@@ -94,20 +116,26 @@ export function Explorer({
       const q = n.quietDb;
       return { d, id: d.id, size: sizeOf(d, axis), margin: Number.isFinite(q) ? -q : NaN, out: !Number.isFinite(q) };
     }
+    if (in3d) {
+      const t = scored3d[d.id];
+      return { d, id: d.id, size: sizeOf(d, axis), margin: t ? t.worstMargin : NaN, out: !n.feasible };
+    }
     return { d, id: d.id, size: sizeOf(d, axis), margin: d.flow.worstMargin, out: !n.feasible };
   };
-  const everything: Pt[] = useMemo(() => space.map(toPt), [space, axis, yMode, load]);
+  const everything: Pt[] = useMemo(() => space.map(toPt), [space, axis, yMode, load, in3d, score.results, check.results]);
   const pts = everything.filter((p) => !p.out && Number.isFinite(p.margin));
   const outs = everything.filter((p) => p.out);
   const front = useMemo(() => frontier(pts), [pts]);
   const selRaw = everything.find((p) => p.id === selected.id) ?? toPt(selected);
+  // In the 3D view a design without a 3D score has no place on the chart: it is left out, not parked at the bottom.
+  const selUnscored = in3d && !Number.isFinite(selRaw.margin);
   const sel = Number.isFinite(selRaw.margin) ? selRaw : { ...selRaw, margin: pts.length ? Math.min(...pts.map((p) => p.margin)) : 0 };
   const all = [...pts, sel];
   const fmtY = (v: number) => (yMode === 'noise' ? `${(-v).toFixed(1)} dB(A)` : pct(v));
 
   const xs = [...all, ...outs].map((p) => p.size);
   const ysRaw = all.map((p) => p.margin);
-  if (yMode === 'margin') for (const r of check.results) ysRaw.push(r.thermal.worstMargin);
+  if (yMode === 'margin' && !in3d) for (const r of check.results) ysRaw.push(r.thermal.worstMargin);
   const xLo = Math.min(...xs);
   const xHi = Math.max(...xs);
   const xPad = (xHi - xLo || 1) * 0.06;
@@ -183,6 +211,23 @@ export function Explorer({
     });
   };
 
+  const runScore = () => {
+    const model = space.filter((d) => d.noise[load].feasible).map((d) => ({ d, id: d.id, size: sizeOf(d, axis), margin: d.flow.worstMargin }));
+    const designs = rescoreCandidates(model, 19).map((p) => p.d);
+    // The selected design itself, even when the design space holds only its duplicate.
+    if (!designs.some((d) => d.id === selected.id)) designs.push(selected);
+    scoreClient.current ??= new CfdClient();
+    setScore({ running: true, done: 0, total: designs.length, results: {} });
+    scoreClient.current.check(designs, cfg, {
+      progress: (p) => setScore((c) => ({ ...c, done: p.done })),
+      checks: (results) => {
+        setScore({ running: false, done: results.length, total: results.length, results: Object.fromEntries(results.map((r) => [r.id, r.thermal])) });
+        setView3d(true);
+      },
+      error: (e) => setScore((c) => ({ ...c, running: false, error: e })),
+    });
+  };
+
   const label = (p: Pt) => TOPOLOGY_LABELS[p.d.effectiveTopology].split(' — ')[0];
   const tip = hover ?? null;
 
@@ -206,12 +251,25 @@ export function Explorer({
           Noise needed
         </button>
       </div>
+      {yMode === 'margin' && Object.keys(scored3d).length > 0 && (
+        <div className="seg-mini y-toggle" role="radiogroup" aria-label="Thermal score from">
+          <button type="button" role="radio" aria-checked={!view3d} className={!view3d ? 'on' : ''} onClick={() => setView3d(false)}>
+            Airflow model
+          </button>
+          <button type="button" role="radio" aria-checked={view3d} className={view3d ? 'on' : ''} onClick={() => setView3d(true)}>
+            3D simulation ({Object.keys(scored3d).length})
+          </button>
+        </div>
+      )}
       <p className="muted small">
         {space.length} layouts the solver evaluated, at {LOAD_LABEL[load]} load. Up and left is better:{' '}
         {yMode === 'noise'
           ? 'smaller case, and quieter while still keeping every part under its limit (fans as slow as that allows).'
           : `smaller case, and more of the tightest part's temperature budget left${cfg.prefs.noiseMode === 'budget' ? ` with the fans held to ${cfg.prefs.noiseBudgetDb} dB(A)` : ''}.`}{' '}
         The line joins the designs nothing else beats on both.
+        {in3d
+          ? ` Scored by short 3D simulations of ${Object.keys(scored3d).length} designs (about 1.4 s of airflow each; a gain between two designs is uncertain by about ±55 %).`
+          : ' Scored by the fast airflow model, which ranks designs differently from the 3D simulation: score the frontier in 3D before choosing.'}
         {outs.length > 0 && ` ${outs.length} design${outs.length > 1 ? 's' : ''} ${yMode === 'noise' ? "can't keep every part under its limit at any speed" : "can't meet the noise budget"} (hollow, along the bottom).`}
       </p>
 
@@ -268,7 +326,7 @@ export function Explorer({
             <circle key={`f${p.id}`} cx={sx(p.size)} cy={sy(p.margin)} r={5} className="front-pt" />
           ))}
           {/* 3D checks: hollow diamonds joined to their 1D point */}
-          {yMode === 'margin' && check.results.map((r) => {
+          {yMode === 'margin' && !in3d && check.results.map((r) => {
             const p = all.find((q) => q.id === r.id);
             if (!p) return null;
             const x = sx(p.size);
@@ -281,7 +339,7 @@ export function Explorer({
             );
           })}
           {/* selected */}
-          <circle cx={sx(sel.size)} cy={sy(sel.margin)} r={9} className="sel-ring" />
+          {!selUnscored && <circle cx={sx(sel.size)} cy={sy(sel.margin)} r={9} className="sel-ring" />}
           {/* end labels */}
           {smallest && coolest && Math.hypot(sx(coolest.size) - sx(smallest.size), sy(coolest.margin) - sy(smallest.margin)) < 90 ? (
             <text x={sx(smallest.size) + 10} y={sy(smallest.margin) + 18} className="end-label">
@@ -363,8 +421,9 @@ export function Explorer({
             : `No layout meets ${cfg.prefs.noiseBudgetDb} dB(A): the quietest one makes ${Math.min(...outs.map((p) => p.d.noise[load].noise.spl)).toFixed(1)} dB(A) even at its slowest fan speeds (pumps and the PSU set a floor). Raise the budget or switch to "Quietest that stays safe".`}
         </p>
       )}
-      {beaten && pts.length > 0 && <p className="muted small">The selected design is not on the frontier: another design is both smaller and cooler. Move the slider to snap to it.</p>}
-      {yMode === 'margin' && front.length > 1 && front[front.length - 1].margin - front[0].margin < 0.05 && (
+      {beaten && !selUnscored && pts.length > 0 && <p className="muted small">The selected design is not on the frontier: another design is both smaller and cooler. Move the slider to snap to it.</p>}
+      {selUnscored && <p className="muted small">The selected design has no 3D score yet: score again to include it.</p>}
+      {yMode === 'margin' && !in3d && front.length > 1 && front[front.length - 1].margin - front[0].margin < 0.05 && (
         <p className="muted small">
           The frontier is nearly flat: the coolest design keeps only {((front[front.length - 1].margin - front[0].margin) * 100).toFixed(1)} points more of the tightest part's
           budget than the smallest. For these parts the case shape hardly changes temperatures — each part's own rise above its air or
@@ -373,6 +432,9 @@ export function Explorer({
       )}
 
       <div className="explorer-actions">
+        <button type="button" className="btn small" onClick={runScore} disabled={score.running || yMode !== 'margin'}>
+          {score.running ? `Simulating ${score.done + 1} of ${score.total}…` : Object.keys(score.results).length ? 'Score again in 3D' : 'Score the frontier in 3D (20 designs)'}
+        </button>
         <button type="button" className="btn ghost small" onClick={runCheck} disabled={check.running}>
           {check.running ? `Simulating ${check.done + 1} of ${check.total}…` : 'Check ends and selection in 3D'}
         </button>
@@ -381,6 +443,7 @@ export function Explorer({
         </button>
       </div>
       {check.error && <p className="muted small">{check.error}</p>}
+      {score.error && <p className="muted small">{score.error}</p>}
       {check.results.length > 0 && (
         <table className="sim-table">
           <thead>
