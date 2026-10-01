@@ -74,4 +74,14 @@ In a full case the radiator's air temperature rise agrees with the fan-curve mod
 
 **Structures below the grid.** Bell-mouth inlets, exit diffusers, deeper plenums and expansion-chamber silencers are estimated in the 1D airflow and noise model (Structures panel), with the fan speeds solved again for each; they are flagged as needing a reference and stay off the explorer. Turning vanes and vortex generators remain reference-CFD only.
 
-**Independent reference.** The OpenFOAM export meshes cleanly in openfoam.com v2312 (CI job, 36 k cells, checkMesh OK) but buoyantSimpleFoam diverges after four iterations (floating-point exception in the p_rgh solve); the cause is open. Until a converged reference or a prototype measurement exists, the 3D simulation's calibration is still only against the app's own fan-curve model.
+**Independent reference.** The OpenFOAM export runs in openfoam.com v2312 (CI, 36 k cells, 300 iterations). The divergence came from two bugs: sliver cells from snapping to the shell (the mesh is now stair-stepped) and overlapping cell zones, which left the CPU heat source without cells. On the default design, mean air rise in each heat source at the same fan speeds:
+
+| Heat source | App 1D | App 3D sim | OpenFOAM (v2312) |
+|---|---|---|---|
+| CPU fins | 2.1 K | 11.0 K | 8.5 K |
+| PSU | 4.0 K | 7.1 K | 7.7 K |
+| GPU card | 3.1 K | 9.3 K | 13.7 K |
+| GPU radiator core | 3.8 K | 7.4 K | 9.7 K |
+| Board and case air | 6.7 K | 19.5 K | 24.3 K |
+
+The in-app 3D simulation and OpenFOAM agree within 2–5 K; the 1D model is 4–18 K optimistic. Airflow per fan: OpenFOAM vs 1D −30 % (CPU cooler), −7 % (PSU), +3 % (GPU card), −10 % (GPU radiator).

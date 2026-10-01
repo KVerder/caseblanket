@@ -2,7 +2,7 @@
 
 Every requirement in [iteration-2-brief.md](iteration-2-brief.md), checked against the code at the end of iteration 2. **Pass** means a test or a measurement shows it. **Partial** means part of it is done and the rest is named. **Cut** or **deferred** means it was left out on purpose, following the brief's priority list.
 
-Tests are in `tests/` (`npm test`, 84 tests) and `e2e/run.mjs` (`npm run e2e`, 36 browser checks). CI runs both on every push. An optional `openfoam` job meshes and runs the exported case in the official container.
+Tests are in `tests/` (`npm test`, 85 tests) and `e2e/run.mjs` (`npm run e2e`, 36 browser checks). CI runs both on every push. An optional `openfoam` job meshes the exported case in the official openfoam.com v2312 container, runs 300 iterations and prints the comparison with the app.
 
 ## Findings first
 
@@ -10,7 +10,18 @@ Tests are in `tests/` (`npm test`, 84 tests) and `e2e/run.mjs` (`npm run e2e`, 3
 - **Partitions rarely pay** once fan speeds follow the load and the PSU fan is semi-passive. The zone model adopts one only past `CHAMBER_MIN_GAIN`, and the 3D optimiser drops walls that do nothing in 3D.
 - **None of the round-2 structures beats the uncertainty on the default design.** They pay only where fans are held back by the noise budget. With a tower cooler and an air-cooled GPU at 24 dB(A), a bell-mouth on the card fan adds +0.75 K of headroom (±55 %).
 - **Silencers cost more pressure than they free in noise budget** in every case tried. A ~4.4 dB expansion chamber on the vent side lowers that fan by ~1.7 dB. Its ~0.9 velocity-head loss then costs more speed than the freed budget buys.
-- **At the same fan speeds, the 3D sim runs every part hotter than the 1D model** on the default design: CPU +8.9 K, GPU memory/VRM +6.2 K, GPU core +7.0 K, PSU intake +3.5 K, case air over the board +12.8 K. Until late in this iteration the 3D scene drove every fan on its full rated curve while the 1D model used the solved speeds, which hid part of the gap (GPU core +2.9 K). Fixed in the commit that adds this audit. Which model is closer to reality needs the OpenFOAM reference or a prototype. [inference] The 1D model's perfectly mixed zones are the likelier optimist.
+- **At the same fan speeds, the 3D sim runs every part hotter than the 1D model** on the default design: CPU +8.9 K, GPU memory/VRM +6.2 K, GPU core +7.0 K, PSU intake +3.5 K, case air over the board +12.8 K. Until late in this iteration the 3D scene drove every fan on its full rated curve while the 1D model used the solved speeds, which hid part of the gap (GPU core +2.9 K). Fixed in the commit that adds this audit. The OpenFOAM reference (below) sides with the 3D sim.
+- **The independent OpenFOAM reference now runs, and it sides with the 3D sim: the 1D model is optimistic.** On the default design, mean air temperature rise inside each heat source, all at the same fan speeds:
+
+| Heat source | App 1D | App 3D sim | OpenFOAM (v2312) |
+|---|---|---|---|
+| CPU fins | 2.1 K | 11.0 K | 8.5 K |
+| PSU | 4.0 K | 7.1 K | 7.7 K |
+| GPU card | 3.1 K | 9.3 K | 13.7 K |
+| GPU radiator core | 3.8 K | 7.4 K | 9.7 K |
+| Board and case air | 6.7 K | 19.5 K | 24.3 K |
+
+  The two 3D solvers agree within 2–5 K, and both run 4–18 K hotter than the 1D model. Not fully like-for-like: the 3D figures are volume means that include stagnant cells, while the 1D figure assumes even through-flow. Airflow agrees better: OpenFOAM vs the 1D model is −30 % for the CPU cooler fan, −7 % PSU, +3 % GPU card fan and −10 % GPU radiator. Recirculation of warm air into the fans is 7–15 %. [inference] The 1D model's main error is its perfectly mixed zones and even flow through each part, not the fan curves. Part temperatures, and the trade-offs built on them, should be read with this offset until a prototype is measured.
 - **Leakage cannot be identified from prototype measurements on the default design.** The fit reports it as not identifiable instead of inventing a value.
 
 ## 0. Audit of iteration 1
@@ -77,8 +88,8 @@ Tests are in `tests/` (`npm test`, 84 tests) and `e2e/run.mjs` (`npm run e2e`, 3
 
 | Requirement | Result | Evidence |
 |---|---|---|
-| OpenFOAM case export (buoyantSimpleFoam, k-ω SST, snappyHexMesh, fan jumps, porous radiators, heat sources) | **Partial** | `openfoam.test.ts` (complete, parseable, consistent references, valid STL). CI on openfoam.com v2312: blockMesh, snappyHexMesh, createBaffles and checkMesh pass ("Mesh OK", 36 k cells). **buoyantSimpleFoam diverges after 4 iterations** (floating-point exception in the p_rgh solve). Local v1912 also diverges without fan forcing. The root cause is not found, so the export is labelled experimental. The CI job is optional (`continue-on-error`). |
-| Results import with residuals against the app | Pass (parser) | `openfoam.test.ts` › "reads the last row of each function object and compares it with the app". It is untested on a converged real run, for the reason above. |
+| OpenFOAM case export (buoyantSimpleFoam, k-ω SST, snappyHexMesh, fan jumps, porous radiators, heat sources) | Pass | `openfoam.test.ts` (complete, parseable, consistent references, valid STL). CI on openfoam.com v2312: meshes (36 k cells, "Mesh OK") and runs 300 iterations (airflow changes under 1 % over the last 50 for all fans but the PSU, 4 %). Two bugs caused the earlier divergence. (1) Snapping to the shell left collapsed sliver cells where a wall meets a vent: it diverged within three iterations even with no fans, heat or gravity, so the mesh is now castellated (stair-stepped) by default. (2) Heat zones overlapped porous zones, and OpenFOAM keeps a cell in one zone only, so the CPU heat zone had no cells (division by zero) and the board kept 292 of 733. Zones are now disjoint, and a heat source that is a porous block heats that zone. The CI job stays optional (`continue-on-error`) because it pulls a 1 GB container. |
+| Results import with residuals against the app | Pass | `openfoam.test.ts` › "reads the last row of each function object…" (synthetic) and "imports the run and compares it with the app" (the CI run's own results) |
 | Measurement import and fit (radiator, leakage, noise), ≥ 2 speeds | Pass | `calibrate.test.ts` › "asks for at least two different fan speeds", "reduces the residuals on synthetic data and recovers the corrections". Unidentifiable factors are reported, not fitted. |
 | Boundary-layer structures marked "needs reference CFD" and off the frontier | Pass | Structures panel; `UNRESOLVED_STRUCTURES` in the 3D optimiser |
 | Model uncertainty as numbers next to every gain | Pass | `uncertainty.ts`: airflow ±5 %, structure gains ±55 % of themselves |
@@ -96,7 +107,8 @@ Tests are in `tests/` (`npm test`, 84 tests) and `e2e/run.mjs` (`npm run e2e`, 3
 
 ## Carried over
 
-- Find why buoyantSimpleFoam diverges on the exported case. Next suspects are the porous coefficients at the vent layer and the pRef setting with open patches. Then run a converged reference and import it.
+- The OpenFOAM reference meshes only the air inside the case (no room around it), on a stair-stepped mesh at 6–12 mm. A snapped mesh needs the vent/wall junction cleaned up first; room air needs a larger domain.
+- Use the reference to correct the 1D model (mixing in the zones, uneven flow through parts), then re-check the explorer's ranking.
 - Orientation by local flow direction; stiffening ribs.
 - Iteration-1 partials still open: local GPU-connector reservation in the packer, exhaust placement and overpressure not optimised, bridging radius 65 mm instead of 90.
 - Every coefficient in the acoustic and structure models is an estimate. None was checked against a cited source or a measurement in this iteration.
