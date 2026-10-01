@@ -7,6 +7,7 @@ import type { DesignConfig } from '../model/types';
 import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, signOf, wallAxes, type Vec3 } from '../solver/geometry';
 import { routedPaths } from '../solver/hoses';
+import { PARTITION_THICKNESS } from '../solver/chambers';
 import type { ShellMesh } from '../solver/shrinkwrap';
 import type { SimFrame } from '../cfd/run';
 import type { Shaping } from '../cfd/scene';
@@ -483,6 +484,28 @@ export class CaseViewer {
     const tubes = new THREE.Group();
     buildRouted(tubes, map, routedPaths(design, cfg));
     this.partsGroup.add(tubes);
+
+    // ---- internal partitions (air chambers): full plates for the box; setShell trims them to a wrap.
+    this.plates = null;
+    if (design.chamber) {
+      const plates = new THREE.Group();
+      const plateMat = this.plateMaterial;
+      for (const cut of design.chamber.cuts) {
+        const min = [...cut.region.min] as Vec3;
+        const max = [...cut.region.max] as Vec3;
+        min[cut.axis] = cut.at - PARTITION_THICKNESS / 2;
+        max[cut.axis] = cut.at + PARTITION_THICKNESS / 2;
+        const b = map.box({ min, max });
+        const size = b.getSize(new THREE.Vector3());
+        const m = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), plateMat);
+        b.getCenter(m.position);
+        m.renderOrder = 1;
+        plates.add(m);
+      }
+      this.partsGroup.add(plates);
+      this.partHomes.push({ obj: plates, home: new THREE.Vector3(), dir: new THREE.Vector3() });
+      this.plates = plates;
+    }
     this.partHomes.push({ obj: tubes, home: new THREE.Vector3(), dir: new THREE.Vector3() });
 
     // Spine / mid-plate for two-layer designs
@@ -565,7 +588,30 @@ export class CaseViewer {
    * Replace the straight box with a shrinkwrapped shell (or go back to the box with null).
    * Vents become a per-vertex mask that the shell shader perforates.
    */
-  setShell(result: { mesh: ShellMesh; vent: Float32Array } | null) {
+  private plates: THREE.Group | null = null;
+  private plateMaterial = new THREE.MeshStandardMaterial({ color: '#b87333', roughness: 0.55, metalness: 0.2, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false });
+
+  /** Solver-space mesh → world-space geometry (positions and normals). */
+  private worldGeometry(mesh: ShellMesh): THREE.BufferGeometry {
+    const map = this.map!;
+    const pos = new Float32Array(mesh.positions.length);
+    const nrm = new Float32Array(mesh.normals.length);
+    const p = new THREE.Vector3();
+    const o = map.point([0, 0, 0]);
+    for (let i = 0; i < pos.length; i += 3) {
+      p.copy(map.point([mesh.positions[i], mesh.positions[i + 1], mesh.positions[i + 2]]));
+      pos.set([p.x, p.y, p.z], i);
+      p.copy(map.point([mesh.normals[i], mesh.normals[i + 1], mesh.normals[i + 2]])).sub(o);
+      nrm.set([p.x, p.y, p.z], i);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+    geo.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+    return geo;
+  }
+
+  setShell(result: { mesh: ShellMesh; vent: Float32Array; plates?: ShellMesh[] } | null) {
     const design = this.design;
     const map = this.map;
     if (!design || !map) return;
@@ -584,6 +630,17 @@ export class CaseViewer {
       return;
     }
     const { mesh, vent } = result;
+    if (this.plates && result.plates?.length) {
+      for (const c of [...this.plates.children]) {
+        this.plates.remove(c);
+        (c as THREE.Mesh).geometry.dispose();
+      }
+      for (const pm of result.plates) {
+        const m = new THREE.Mesh(this.worldGeometry(pm), this.plateMaterial);
+        m.renderOrder = 1;
+        this.plates.add(m);
+      }
+    }
     const pos = new Float32Array(mesh.positions.length);
     const nrm = new Float32Array(mesh.normals.length);
     const p = new THREE.Vector3();

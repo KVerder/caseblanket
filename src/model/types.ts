@@ -226,6 +226,8 @@ export interface Preferences {
   maxHeight: number;
   maxDepth: number;
   ambientC: number;
+  /** Let the solver add internal partitions (air chambers) when they help, or keep one chamber. */
+  chambers: 'auto' | 'single';
   /** Load the design is rated at: typical gaming or sustained full load. */
   loadProfile: LoadProfileId;
   /** Allowed air temperature rise leaving any heat exchanger. */

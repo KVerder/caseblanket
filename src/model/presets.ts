@@ -444,6 +444,7 @@ export const DEFAULT_PREFS: Preferences = {
   ambientC: 25,
   targetRiseC: 12,
   loadProfile: 'gaming',
+  chambers: 'auto',
   feetHeight: 8,
   spineThickness: 2,
   finish: '#2b2d31',

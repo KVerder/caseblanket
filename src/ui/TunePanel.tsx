@@ -238,6 +238,22 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
         </Grid>
       </Section>
 
+      <Section title="Internal chambers">
+        <Segmented
+          label="Partitions"
+          value={p.chambers}
+          options={[
+            { value: 'auto', label: 'Add when they help' },
+            { value: 'single', label: 'One chamber' },
+          ]}
+          onChange={(v) => set('chambers', v)}
+        />
+        <p className="muted small">
+          Printed walls that split the case into separate air chambers, so one part's hot air can't reach another's intake. The solver
+          tries every wall that fits between the parts and keeps one only if it lifts the tightest part by more than 5 % of its budget.
+        </p>
+      </Section>
+
       <Section title="Thermal targets">
         <Segmented
           label="Rate the design at"

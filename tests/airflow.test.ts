@@ -87,3 +87,56 @@ describe('component temperatures', () => {
     expect(r.worstComponent).toBe('GPU core');
   });
 });
+
+describe('zone network', () => {
+  it('conserves mass and energy across chambers', async () => {
+    const { solveNetwork, RHO: rho, CP: cp } = await import('../src/solver/airflow');
+    const fan = (id: string, source: 'outside' | number, sink: 'outside' | number, heat: number): FanGroupInput => ({
+      id,
+      label: id,
+      heatW: heat,
+      fan: FANS.a12x25,
+      fanCount: 1,
+      source,
+      sink,
+      losses: [{ label: 'vent', zeta: 3, area: 0.0144 }],
+      isRadiator: false,
+    });
+    const groups = [fan('in0', 'outside', 0, 0), fan('hot', 0, 1, 150), fan('out1', 1, 'outside', 40), fan('psu', 2, 'outside', 60)];
+    const zone = (id: string, heatW: number, passive: number) => ({ id, label: id, heatW, passiveArea: passive, passiveZeta: 3, leakArea: 0.0004, components: [] });
+    const r = solveNetwork({
+      zones: [zone('a', 20, 0.004), zone('b', 30, 0.002), zone('c', 10, 0.003)],
+      links: [
+        { a: 0, b: 1, area: 3e-4, zeta: 2.5, label: 'a-b' },
+        { a: 1, b: 2, area: 2e-4, zeta: 2.5, label: 'b-c' },
+      ],
+      groups,
+      ambientC: 25,
+      radEffectiveness: 0.7,
+    });
+    // Mass: every zone balances; what enters from outside leaves to outside.
+    let fromOutside = 0;
+    let toOutside = 0;
+    let heatOut = 0;
+    r.zones.forEach((z) => {
+      if (z.passiveFlow > 0) fromOutside += z.passiveFlow;
+      else {
+        toOutside -= z.passiveFlow;
+        heatOut += -z.passiveFlow * rho * cp * z.riseC;
+      }
+    });
+    r.groups.forEach((g) => {
+      if (g.source === 'outside' && g.sink !== 'outside') fromOutside += g.flow;
+      if (g.sink === 'outside' && g.source !== 'outside') {
+        toOutside += g.flow;
+        heatOut += g.flow * rho * cp * g.exitRiseC;
+      }
+    });
+    expect(toOutside).toBeCloseTo(fromOutside, 6);
+    // Energy: everything released leaves with the air.
+    const heatIn = 20 + 30 + 10 + 150 + 40 + 60;
+    expect(heatOut).toBeCloseTo(heatIn, 2);
+    // Zone c is fed by its own vents and the link from b, so it runs warmer than room but cooler than b.
+    expect(r.zones[2].riseC).toBeGreaterThan(0);
+  });
+});

@@ -2,6 +2,8 @@ import type { DesignConfig } from '../model/types';
 import type { Design } from '../solver/evaluate';
 import { axisOf, signOf, wallAxes, type Box, type Vec3 } from '../solver/geometry';
 import { meshGrid, shellField, type Grid, type ShellMesh } from '../solver/shrinkwrap';
+import { PARTITION_THICKNESS } from '../solver/chambers';
+import { plateMesh } from '../solver/partitions';
 
 /**
  * Print-ready shell: the wall as a solid (outer surface down to one wall thickness in), with vent
@@ -136,6 +138,31 @@ export function printPieces(design: Design, cfg: DesignConfig, opt: PrintOptions
     const mesh = meshPiece(solid, box, cell);
     if (mesh.indices.length) out.push({ name: `piece-${String(out.length + 1).padStart(2, '0')}`, box, mesh });
   });
+  // Partition plates, trimmed to the shell, cut into strips that fit the bed.
+  if (design.chamber) {
+    const F = shellField(design, cfg, cfg.prefs.organic ?? 0);
+    const bed = Math.min(...opt.bed) - 4;
+    let k = 0;
+    for (const cut of design.chamber.cuts) {
+      const [xa, ya] = wallAxes(cut.axis);
+      const long = cut.region.max[xa] - cut.region.min[xa] >= cut.region.max[ya] - cut.region.min[ya] ? xa : ya;
+      const short = long === xa ? ya : xa;
+      const nLong = Math.ceil((cut.region.max[long] - cut.region.min[long]) / bed);
+      const nShort = Math.ceil((cut.region.max[short] - cut.region.min[short]) / bed);
+      for (let i = 0; i < nLong; i++)
+        for (let j = 0; j < nShort; j++) {
+          const region: Box = { min: [...cut.region.min] as Vec3, max: [...cut.region.max] as Vec3 };
+          const L = (cut.region.max[long] - cut.region.min[long]) / nLong;
+          const S = (cut.region.max[short] - cut.region.min[short]) / nShort;
+          region.min[long] = cut.region.min[long] + i * L;
+          region.max[long] = region.min[long] + L;
+          region.min[short] = cut.region.min[short] + j * S;
+          region.max[short] = region.min[short] + S;
+          const mesh = plateMesh(design, cfg, { ...cut, region }, F, 0.5);
+          if (mesh.indices.length) out.push({ name: `partition-${String(++k).padStart(2, '0')}`, box: mesh.bbox, mesh });
+        }
+    }
+  }
   progress?.(boxes.length, boxes.length);
   return out;
 }
@@ -262,6 +289,12 @@ export function printReadme(design: Design, opt: PrintOptions, pieces: PrintPiec
       return `${p.name}.stl  (cut box ${s.join(' × ')} mm, ${(p.mesh.indices.length / 3).toLocaleString()} triangles)`;
     }),
     '',
+    ...(design.chamber
+      ? [
+          '',
+          `partition-*.stl are the ${PARTITION_THICKNESS} mm internal walls that split the case into ${design.chamber.chambers.length} air chambers. Glue them into the shell; the round holes take hoses and cables (fit grommets or foam to seal them).`,
+        ]
+      : []),
     'Not included: standoffs, screw bosses, PSU and fan mounting holes — add them in your CAD tool.',
   ];
   return lines.join('\n');

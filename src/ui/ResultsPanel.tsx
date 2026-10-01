@@ -1,7 +1,8 @@
 import { MATERIALS } from '../model/presets';
 import type { DesignConfig, LoadProfileId } from '../model/types';
 import { M3S_TO_CFM } from '../solver/airflow';
-import { TOPOLOGY_LABELS, type Design } from '../solver/evaluate';
+import { CHAMBER_MIN_GAIN, TOPOLOGY_LABELS, type Design } from '../solver/evaluate';
+import { PARTITION_THICKNESS } from '../solver/chambers';
 import type { SolveResult } from '../solver/solve';
 
 const mm = (v: number) => Math.round(v).toString();
@@ -279,6 +280,90 @@ export function Candidates({ result, selected, onSelect }: { result: SolveResult
           );
         })}
       </ul>
+    </section>
+  );
+}
+
+/** Which chamber's air a component sits in: its zone, or the zone its fan draws from. */
+function chamberOf(d: Design, via: string): string {
+  const ch = d.chamber!.chambers;
+  const z = ch.find((c) => c.id === via);
+  if (z) return z.label;
+  const g = d.flow.groups.find((x) => x.id === via);
+  if (!g) return '';
+  const k = typeof g.source === 'number' ? g.source : typeof g.sink === 'number' ? g.sink : -1;
+  return k >= 0 ? ch[k].label : g.source === 'outside' ? 'draws room air' : '';
+}
+
+/** The partitions in use (or the best one tried), and what they change part by part. */
+export function Chambers({ d, cfg }: { d: Design; cfg: DesignConfig }) {
+  if (cfg.prefs.chambers === 'single') return null;
+  const opt = d.chamberOptions[0];
+  if (!d.chamber) {
+    return (
+      <section className="chambers" aria-label="Internal chambers">
+        <h3>Internal chambers</h3>
+        <p className="muted small">
+          {opt
+            ? `One chamber. The best partition that fits (${opt.layout.chambers.map((c) => c.label.replace(' chamber', '')).join(' | ')}) changes the tightest part by ${opt.gainK >= 0 ? '+' : ''}${opt.gainK.toFixed(1)} K, ${(opt.gain * 100).toFixed(1)} % of its budget — not more than the model's ±${CHAMBER_MIN_GAIN * 100} %.`
+            : 'One chamber. No partition fits between these parts without cutting a part or an air gap.'}
+        </p>
+      </section>
+    );
+  }
+  const base = d.singleChamberFlow!;
+  return (
+    <section className="airflow chambers" aria-label="Internal chambers">
+      <div className="section-head">
+        <h3>Internal chambers</h3>
+        <span className="muted small">
+          {d.chamber.cuts.length} wall{d.chamber.cuts.length > 1 ? 's' : ''}, ≈ {Math.round(d.chamberWeightKg * 1000)} g
+        </span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Part</th>
+            <th scope="col" className="num">
+              1 chamber
+            </th>
+            <th scope="col" className="num">
+              {d.chamber.chambers.length} chambers
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {d.flow.components.map((c) => {
+            const b = base.components.find((x) => x.id === c.id);
+            const dT = b ? c.tempC - b.tempC : 0;
+            return (
+              <tr key={c.id}>
+                <th scope="row">
+                  <span className="path-name">{c.label}</span>
+                  <span className="path-sub">{chamberOf(d, c.via)}</span>
+                </th>
+                <td className="num muted">{b ? `${Math.round(b.tempC)}°` : '—'}</td>
+                <td className={`num ${dT < -0.5 ? 'better' : dT > 0.5 ? 'worse' : ''}`}>
+                  {Math.round(c.tempC)}° <small>({dT >= 0 ? '+' : ''}{dT.toFixed(1)})</small>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <ul className="muted small chamber-list">
+        {d.chamber.chambers.map((z) => (
+          <li key={z.id}>
+            <b>{z.label}</b>: {z.parts.map((p) => d.parts.find((x) => x.id === p)?.label ?? p).join(', ')}
+          </li>
+        ))}
+        {d.chamber.links.map((l, i) => (
+          <li key={i}>
+            Leak {l.label}: ≈ {(l.area * 1e4).toFixed(1)} cm²
+          </li>
+        ))}
+      </ul>
+      <p className="muted small">Walls are {PARTITION_THICKNESS} mm printed plates in existing gaps, so they add no volume. Leak areas are estimates.</p>
     </section>
   );
 }

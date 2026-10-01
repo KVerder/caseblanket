@@ -1,10 +1,13 @@
 import type { DesignConfig } from '../model/types';
 import type { Design } from '../solver/evaluate';
-import { meshShell, ventMask, type ShellMesh } from '../solver/shrinkwrap';
+import { plateMeshes } from '../solver/partitions';
+import { defaultCell, meshGrid, sampleGrid, shellGrid, ventMask, type ShellMesh } from '../solver/shrinkwrap';
 
 export interface ShellResult {
   mesh: ShellMesh;
   vent: Float32Array;
+  /** Partition plates trimmed to this shell. */
+  plates: ShellMesh[];
 }
 
 /** Meshes organic shells off the main thread; a new request cancels the running one. */
@@ -19,12 +22,12 @@ export class MeshClient {
     try {
       const w = new Worker(new URL('../solver/meshWorker.ts', import.meta.url), { type: 'module' });
       w.onmessage = (e) => {
-        const { id, mesh, vent, error } = e.data as { id: number; mesh?: ShellMesh; vent?: Float32Array; error?: string };
+        const { id, mesh, vent, plates, error } = e.data as { id: number; mesh?: ShellMesh; vent?: Float32Array; plates?: ShellMesh[]; error?: string };
         if (!this.pending || this.pending.id !== id) return;
         const p = this.pending;
         this.pending = null;
         if (error) p.reject(new Error(error));
-        else p.resolve({ mesh: mesh!, vent: vent! });
+        else p.resolve({ mesh: mesh!, vent: vent!, plates: plates ?? [] });
       };
       w.onerror = (ev) => {
         ev.preventDefault();
@@ -54,8 +57,9 @@ export class MeshClient {
       return new Promise((resolve, reject) =>
         setTimeout(() => {
           if (id !== this.seq) return reject(new Error('superseded'));
-          const mesh = meshShell(design, cfg, organic);
-          resolve({ mesh, vent: ventMask(design, mesh) });
+          const grid = shellGrid(design, cfg, organic, defaultCell(design));
+          const mesh = meshGrid(grid);
+          resolve({ mesh, vent: ventMask(design, mesh), plates: plateMeshes(design, cfg, sampleGrid(grid)) });
         }, 0),
       );
     }

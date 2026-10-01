@@ -1,7 +1,8 @@
 import { MATERIALS, VENT_STYLES } from '../model/presets';
 import type { DesignConfig, FanSpec, RadiatorSpec, TopologyId , LoadProfileId } from '../model/types';
+import { CASE_LEAK, PARTITION_THICKNESS, chamberLayouts, ventAreaIn, wallShare, type ChamberLayout } from './chambers';
 import { HOSE_MIN_BEND, hosePaths, minBendRadius, pathLength } from './hoses';
-import { perforatedPlateZeta, solveFlow, type ComponentSpec, type FanGroupInput, type FlowResult, type LossTerm } from './airflow';
+import { perforatedPlateZeta, solveFlow, solveNetwork, type ComponentSpec, type Endpoint, type FanGroupInput, type FlowResult, type LossTerm } from './airflow';
 import {
   axisOf,
   localToWorld,
@@ -20,6 +21,18 @@ import {
 import { allowedFaceDirs, boardStack, isTwoLayer, type ItemDef, type ItemKind, type LayerId, type Profile } from './items';
 import { interiorThickness, type PackNode } from './pack';
 import type { WrapMetrics } from './shrinkwrap';
+
+/** Partitions must lift the tightest part's margin by more than this share of its budget (model uncertainty, estimate). */
+export const CHAMBER_MIN_GAIN = 0.05;
+
+export interface ChamberOption {
+  layout: ChamberLayout;
+  dirs: ('in' | 'out')[];
+  flow: FlowResult;
+  /** Change in the tightest part's margin vs one chamber: share of budget, and K. */
+  gain: number;
+  gainK: number;
+}
 
 export interface PlacedPart {
   id: string;
@@ -77,6 +90,14 @@ export interface Design {
   flow: FlowResult;
   /** The same design rated at both load profiles (flow is the selected one). */
   thermal: Record<LoadProfileId, FlowResult>;
+  /** Internal partitions in use (null: one chamber). */
+  chamber: ChamberLayout | null;
+  /** Best chamber layouts tried, by gain on the tightest part (empty when chambers are off). */
+  chamberOptions: ChamberOption[];
+  /** The same design with one chamber, when partitions were adopted (for the comparison). */
+  singleChamberFlow?: FlowResult;
+  /** Weight of the partition plates (not in weightKg). */
+  chamberWeightKg: number;
   groupParts: Record<string, string>;
   checks: Check[];
   invalid: boolean;
@@ -414,6 +435,10 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       ? { id: 'gpu-mem', label: 'GPU memory/VRM', limitC: tLimits.gpuMem, selfRiseK: cardHeat * rth.gpuMemToAir, air: 'mean', heatW: cardHeat }
       : { id: 'gpu', label: 'GPU', limitC: tLimits.gpuCore, selfRiseK: cardHeat * rth.gpuToAir, air: 'mean', heatW: cardHeat };
     let internalHeat = bp.heatW + extrasW;
+    // Where heat released into case air, and the components rated on case air, sit (for chambers).
+    const heatByPart: Record<string, number> = { board: bp.heatW };
+    for (const e of cfg.parts.extras) heatByPart[`extra-${e.id}`] = (heatByPart[`extra-${e.id}`] ?? 0) + e.heatW;
+    const compPart: Record<string, string> = { 'case-air': 'board' };
     const caseComps: ComponentSpec[] = [{ id: 'case-air', label: 'Board & drives (case air)', limitC: tLimits.caseAir, selfRiseK: 0, air: 'zone', heatW: Math.max(30, bp.heatW + extrasW) }];
     if (gpuSpec.cardFan) {
       const atWall = gpu.faceAtWall && vents.some((v) => v.groupId === 'gpu');
@@ -439,6 +464,8 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     } else {
       // No fan of its own: the card sits in case air, a few kelvin above it.
       internalHeat += cardHeat;
+      heatByPart.gpu = (heatByPart.gpu ?? 0) + cardHeat;
+      compPart[cardComp.id] = 'gpu';
       caseComps.push({ ...cardComp, air: 'zone' });
     }
 
@@ -475,7 +502,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       p.kind === 'rad-cpu'
         ? cpuComp('coolant', rth.cpuToCoolant)
         : { id: 'gpu', label: 'GPU core', limitC: tLimits.gpuCore, selfRiseK: radHeat[p.id] * rth.gpuToCoolant, air: 'coolant', heatW: radHeat[p.id] };
-    return { groups, internalHeat, caseComps, radHeat, radComp };
+    return { groups, internalHeat, heatByPart, caseComps, compPart, radHeat, radComp };
   };
 
   // Radiators (direction decided below)
@@ -522,12 +549,36 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   }
   if (combos.length === 0) combos.push([]);
   const passiveZeta = perforatedPlateZeta(vs.openRatio) + (prefs.dustFilters ? advanced.dustFilterLossK : 0);
-  const solveAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[]) => {
+  const effectiveTopology: TopologyId = two && !hasB ? (topology === 'sandwich' ? 'flat' : 'direct') : topology;
+  // Enough of the design for the chamber geometry and hose routing, before it is assembled.
+  const layoutDesign = { parts, interior, profile, effectiveTopology } as unknown as Design;
+  const solveAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null) => {
     const net = network(advanced.loads[profileId]);
     const groups = [...net.groups];
     for (const p of radParts) {
       const i = wallRads.indexOf(p);
       groups.push(radGroup(p, i < 0 ? 'through' : dirs[i], net.radHeat[p.id], net.radComp(p)));
+    }
+    if (layout) {
+      // Each 'case' endpoint becomes the chamber that holds the group's part.
+      const zoneOfPart = (id: string) => Math.max(0, layout.chambers.findIndex((c) => c.parts.includes(id)));
+      const partOfGroup = (id: string) => ({ cpu: 'board', 'gpu-card': 'gpu' })[id] ?? id;
+      const mapEnd = (e: Endpoint, gid: string): Endpoint => (e === 'case' ? zoneOfPart(partOfGroup(gid)) : e);
+      return solveNetwork({
+        zones: layout.chambers.map((c, k) => ({
+          id: c.id,
+          label: c.label,
+          heatW: Object.entries(net.heatByPart).reduce((sum, [part, w]) => sum + (zoneOfPart(part) === k ? w : 0), 0),
+          passiveArea: vents.filter((v) => v.kind === 'passive').reduce((sum, v) => sum + ventAreaIn(v, layoutDesign, c.box), 0) * MM2,
+          passiveZeta,
+          leakArea: CASE_LEAK * wallShare(layoutDesign, c.box),
+          components: net.caseComps.filter((cc) => zoneOfPart(net.compPart[cc.id] ?? 'board') === k),
+        })),
+        links: layout.links.map((l) => ({ ...l, zeta: 2.5 })),
+        groups: groups.map((g) => ({ ...g, source: mapEnd(g.source, g.id), sink: mapEnd(g.sink, g.id) })),
+        ambientC: prefs.ambientC,
+        radEffectiveness: advanced.radEffectiveness,
+      });
     }
     return solveFlow({
       groups,
@@ -541,13 +592,31 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     });
   };
   const loadId: LoadProfileId = prefs.loadProfile ?? 'gaming';
-  let best: { flow: FlowResult; dirs: ('in' | 'out')[] } | null = null;
+  let best: { flow: FlowResult; dirs: ('in' | 'out')[]; layout: ChamberLayout | null } | null = null;
   for (const c of combos) {
     const flow = solveAt(loadId, c);
-    if (!best || flow.score > best.flow.score + 1e-9) best = { flow, dirs: c };
+    if (!best || flow.score > best.flow.score + 1e-9) best = { flow, dirs: c, layout: null };
+  }
+  const single = best!;
+  // Internal partitions: try every buildable 2- and 3-chamber layout; keep the best one only if it
+  // beats one chamber by more than the model's uncertainty on the tightest part.
+  const chamberOptions: ChamberOption[] = [];
+  if (prefs.chambers !== 'single') {
+    for (const layout of chamberLayouts(layoutDesign, cfg)) {
+      let top: { flow: FlowResult; dirs: ('in' | 'out')[] } | null = null;
+      for (const c of combos) {
+        const flow = solveAt(loadId, c, layout);
+        if (!top || flow.worstMargin > top.flow.worstMargin + 1e-9) top = { flow, dirs: c };
+      }
+      chamberOptions.push({ layout, dirs: top!.dirs, flow: top!.flow, gainK: top!.flow.worstHeadroomK - single.flow.worstHeadroomK, gain: top!.flow.worstMargin - single.flow.worstMargin });
+    }
+    chamberOptions.sort((a, b) => b.gain - a.gain);
+    const top = chamberOptions[0];
+    if (top && top.gain > CHAMBER_MIN_GAIN) best = { flow: top.flow, dirs: top.dirs, layout: top.layout };
   }
   const otherId: LoadProfileId = loadId === 'gaming' ? 'full' : 'gaming';
-  const thermal = { [loadId]: best!.flow, [otherId]: solveAt(otherId, best!.dirs) } as Record<LoadProfileId, FlowResult>;
+  const thermal = { [loadId]: best!.flow, [otherId]: solveAt(otherId, best!.dirs, best!.layout) } as Record<LoadProfileId, FlowResult>;
+  const chamber = best!.layout;
   const flow = best!.flow;
   for (const p of radParts) {
     const i = wallRads.indexOf(p);
@@ -618,7 +687,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   const design: Design = {
     id: `${topology}-${profile.id}-${index}`,
     topology,
-    effectiveTopology: two && !hasB ? (topology === 'sandwich' ? 'flat' : 'direct') : topology,
+    effectiveTopology,
     profile,
     interior,
     wall,
@@ -634,6 +703,10 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     spine,
     flow,
     thermal,
+    chamber,
+    chamberOptions: chamberOptions.slice(0, 6),
+    singleChamberFlow: chamber ? single.flow : undefined,
+    chamberWeightKg: chamber ? (chamber.plateAreaMm2 * PARTITION_THICKNESS * mat.densityGcm3) / 1e6 : 0,
     groupParts,
     checks,
     invalid: checks.some((c) => c.level === 'error'),

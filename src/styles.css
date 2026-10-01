@@ -1530,3 +1530,7 @@ dialog.print .catalog-foot {
 .temps th.sel,
 .temps td.sel { font-weight: 600; }
 .temps td.temp:not(.sel) { opacity: 0.75; }
+
+.chambers td.better { color: var(--good); }
+.chambers td.worse { color: var(--bad); }
+.chambers .chamber-list { margin: 0.5rem 0 0; padding-left: 1.1rem; }
