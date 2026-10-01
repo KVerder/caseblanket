@@ -5,6 +5,7 @@ import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, dirVec, localBoxToWorld, signOf, wallAxes, type Box, type Dir, type Vec3 } from '../solver/geometry';
 import { boardStack } from '../solver/items';
 import { shellField } from '../solver/shrinkwrap';
+import type { Partition } from '../solver/chambers';
 import { CELL_SOLID, type FanDisk, type HeatSource, type Louvre, type Scene } from './solver';
 
 /** Flow-shaping features the optimiser can switch on. */
@@ -15,6 +16,10 @@ export interface Shaping {
   ducts: string[];
   /** Radiators whose fans are reversed relative to the design. */
   flipped: string[];
+  /** Extra internal partitions to try (on top of the design's own chambers). */
+  partitions?: Partition[];
+  /** Leave out the design's own partitions (to check them against one chamber). */
+  noChambers?: boolean;
 }
 
 export const NO_SHAPING: Shaping = { louvres: [], ducts: [], flipped: [] };
@@ -219,7 +224,7 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
         const finTop = cz + cooler.height - cooler.fan.thickness;
         const fins = cellsIn(box([sx - cooler.depth / 2, sy - cooler.width / 2, cz], [sx + cooler.depth / 2, sy + cooler.width / 2, finTop]));
         setPorous(fins, [2], betaFor(cfg.advanced.finStackLossK, finTop - cz), HIGH);
-        heat.push({ id: 'cpu', label: 'CPU cooler', cells: Int32Array.from(fins.filter((c) => cellType[c] !== CELL_SOLID)), watts: cooler.cpuPowerW });
+        heat.push({ id: 'cpu', label: 'CPU cooler', cells: Int32Array.from(fins.filter((c) => cellType[c] !== CELL_SOLID)), watts: groupFlow('cpu')?.heatW ?? cooler.cpuPowerW });
         // Fan on top, blowing down through the fins onto the board (board frame = world axes).
         const r = Math.min(cooler.fan.size, cooler.width, cooler.depth) / 2;
         const top = finTop + Math.max(cooler.fan.thickness, h);
@@ -237,7 +242,7 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
       } else {
         const fins = cellsIn(box([sx - cooler.depth / 2, sy - cooler.width / 2, cz], [sx + cooler.depth / 2, sy + cooler.width / 2, cz + cooler.height]));
         setPorous(fins, [0], betaFor(cfg.advanced.finStackLossK, cooler.depth), HIGH);
-        heat.push({ id: 'cpu', label: 'CPU cooler', cells: Int32Array.from(fins.filter((c) => cellType[c] !== CELL_SOLID)), watts: cooler.cpuPowerW });
+        heat.push({ id: 'cpu', label: 'CPU cooler', cells: Int32Array.from(fins.filter((c) => cellType[c] !== CELL_SOLID)), watts: groupFlow('cpu')?.heatW ?? cooler.cpuPowerW });
       }
     } else if (part.kind === 'gpu') {
       const [L, H, T] = part.size;
@@ -319,11 +324,27 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
   }
 
   // Board, extras and (fanless) card heat go into the air just above the board.
-  const internal =
-    cfg.parts.board.heatW +
-    cfg.parts.extras.reduce((s, e) => s + e.heatW, 0) +
-    (gpuSpec.cardFan ? 0 : gpuSpec.boardPowerW * (1 - (gpuSpec.cooling === 'aio' ? gpuSpec.radiatorHeatShare : 0)));
+  // Same load as the design's airflow model (its zones hold the heat released into case air).
+  const internal = design.flow.zones?.length
+    ? design.flow.zones.reduce((sum, z) => sum + z.heatW, 0)
+    : cfg.parts.board.heatW +
+      cfg.parts.extras.reduce((sum, e) => sum + e.heatW, 0) +
+      (gpuSpec.cardFan ? 0 : gpuSpec.boardPowerW * (1 - (gpuSpec.cooling === 'aio' ? gpuSpec.radiatorHeatShare : 0)));
   heat.push({ id: 'board', label: 'Board (VRM, RAM, SSD)', cells: Int32Array.from(boardHeatCells.filter((c) => cellType[c] !== CELL_SOLID)), watts: internal });
+
+  // ------------------------------------------------ internal partitions (solid plates in the gaps)
+  const cuts = [...(shaping.noChambers ? [] : (design.chamber?.cuts ?? [])), ...(shaping.partitions ?? [])];
+  if (cuts.length) {
+    const fanCells = new Set<number>();
+    for (const f of fans) for (const c of f.cells) fanCells.add(c);
+    for (const cut of cuts) {
+      const min = [...cut.region.min] as Vec3;
+      const max = [...cut.region.max] as Vec3;
+      min[cut.axis] = cut.at - 0.5;
+      max[cut.axis] = cut.at + 0.5;
+      for (const c of cellsIn({ min, max })) if (cellType[c] !== CELL_SOLID && !fanCells.has(c) && beta[0][c] === 0 && beta[1][c] === 0 && beta[2][c] === 0) cellType[c] = CELL_SOLID;
+    }
+  }
 
   // ------------------------------------------------ louvres
   const louvres: Louvre[] = [];

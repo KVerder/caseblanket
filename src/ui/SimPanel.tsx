@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ShapingResult } from '../cfd/run';
+import { UNRESOLVED_STRUCTURES, type ShapingResult } from '../cfd/run';
 import type { Shaping } from '../cfd/scene';
 import type { FlowStats } from '../cfd/solver';
 import type { DesignConfig } from '../model/types';
@@ -10,6 +10,7 @@ import { CfdClient } from '../state/cfdClient';
 type Status = { kind: 'idle' } | { kind: 'running'; simSeconds: number } | { kind: 'done' } | { kind: 'error'; text: string };
 
 const f1 = (x: number) => (x >= 0 ? '+' : '') + x.toFixed(1);
+const pct = (m: number) => `${Math.round(m * 100)} %`;
 
 /** Live airflow simulation of the selected design, and the flow-shaping optimiser. */
 export function SimPanel({ design, cfg, viewer }: { design: Design; cfg: DesignConfig; viewer: () => CaseViewer | null }) {
@@ -56,7 +57,8 @@ export function SimPanel({ design, cfg, viewer }: { design: Design; cfg: DesignC
       progress: (p) => setOpt((o) => ({ ...o, ...p })),
       result: (result) => {
         setOpt({ running: false, done: 1, total: 1, label: '', result });
-        const s = result.shaping.louvres.length + result.shaping.ducts.length + result.shaping.flipped.length ? result.shaping : null;
+        const sh = result.shaping;
+        const s = sh.louvres.length + sh.ducts.length + sh.flipped.length + (sh.partitions?.length ?? 0) || sh.noChambers ? sh : null;
         setShaping(s);
         run(s);
       },
@@ -158,24 +160,61 @@ export function SimPanel({ design, cfg, viewer }: { design: Design; cfg: DesignC
         <div className="shaping">
           <h4 className="sub">Airflow shaping</h4>
           <p className="small">
-            Heat-weighted intake air: <b>{f1(opt.result.baselineScore)} °C</b> → <b>{f1(opt.result.bestScore)} °C</b>
-            {opt.result.bestScore < opt.result.baselineScore - 0.05
-              ? ` (${(opt.result.baselineScore - opt.result.bestScore).toFixed(1)} °C cooler)`
-              : ' — nothing tried beat the plain design.'}
+            Tightest part ({opt.result.bestThermal.worstComponent}): <b>{pct(opt.result.baselineThermal.worstMargin)}</b> →{' '}
+            <b>{pct(opt.result.bestThermal.worstMargin)}</b> of its budget left
+            {opt.result.bestThermal.worstMargin > opt.result.baselineThermal.worstMargin + opt.result.threshold
+              ? ` (${(opt.result.bestThermal.worstHeadroomK - opt.result.baselineThermal.worstHeadroomK).toFixed(1)} K more margin)`
+              : opt.result.shaping.noChambers
+                ? ' — the internal walls make no difference here in 3D, so they were dropped.'
+                : ` — nothing tried beat the design by more than ${pct(opt.result.threshold)} of the budget (the simulation's uncertainty).`}
           </p>
+          <table className="sim-table">
+            <thead>
+              <tr>
+                <th scope="col">Part (3D sim)</th>
+                <th scope="col" className="num">
+                  As solved
+                </th>
+                <th scope="col" className="num">
+                  Shaped
+                </th>
+                <th scope="col" className="num">
+                  Limit
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {opt.result.baselineThermal.components.map((c) => {
+                const b = opt.result!.bestThermal.components.find((x) => x.id === c.id);
+                return (
+                  <tr key={c.id}>
+                    <th scope="row">{c.label}</th>
+                    <td className="num">{Math.round(c.tempC)}°</td>
+                    <td className="num">{b ? `${Math.round(b.tempC)}°` : '—'}</td>
+                    <td className="num muted">{c.limitC}°</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
           <ul className="checks-list">
             {opt.result.steps.map((s) => (
               <li key={s.label} className={`check ${s.kept ? 'ok' : 'info'}`}>
                 <span className="dot" aria-hidden="true" />
                 <span>
                   {s.kept ? 'Kept: ' : 'Tried: '}
-                  {s.label} ({f1(s.score)} °C)
+                  {s.label} — tightest part {pct(s.margin)} left ({s.worst})
+                  {s.weightKg ? `, ${s.weightKg > 0 ? '+' : '−'}${Math.round(Math.abs(s.weightKg) * 1000)} g` : ''}
                 </span>
               </li>
             ))}
           </ul>
+          <p className="muted small">
+            Every structure here sits inside the existing shell, so none adds volume. Not tried: {UNRESOLVED_STRUCTURES.join(', ')} — their effect is
+            smaller than a grid cell, so this simulation can't show it; they need a finer reference simulation.
+          </p>
           {shaping && (
-            <p className="muted small">The copper louvres and duct plates in the 3D view are the kept changes; the simulation now runs with them.</p>
+            <p className="muted small">The copper louvres, duct plates and walls in the 3D view are the kept changes; the simulation now runs with them.</p>
           )}
         </div>
       )}

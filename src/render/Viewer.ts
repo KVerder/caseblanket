@@ -708,8 +708,34 @@ export class CaseViewer {
   setShaping(shaping: Shaping | null) {
     if (!this.design || !this.map || !this.cfg) return;
     this.flow.setShaping(this.design, this.cfg, shaping, this.map);
+    // The design's own walls hide when the optimiser removed them; walls it added are drawn here.
+    if (this.plates) this.plates.visible = !shaping?.noChambers;
+    if (this.extraPlates) {
+      this.partsGroup.remove(this.extraPlates);
+      for (const c of this.extraPlates.children) (c as THREE.Mesh).geometry.dispose();
+      this.extraPlates = null;
+    }
+    if (shaping?.partitions?.length) {
+      const g = new THREE.Group();
+      for (const cut of shaping.partitions) {
+        const min = [...cut.region.min] as Vec3;
+        const max = [...cut.region.max] as Vec3;
+        min[cut.axis] = cut.at - PARTITION_THICKNESS / 2;
+        max[cut.axis] = cut.at + PARTITION_THICKNESS / 2;
+        const b = this.map.box({ min, max });
+        const size = b.getSize(new THREE.Vector3());
+        const m = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), this.plateMaterial);
+        b.getCenter(m.position);
+        m.renderOrder = 1;
+        g.add(m);
+      }
+      this.partsGroup.add(g);
+      this.extraPlates = g;
+    }
     this.needsRender = true;
   }
+
+  private extraPlates: THREE.Group | null = null;
 
   /** PNG snapshot of the current view. */
   snapshot(): string {

@@ -133,6 +133,9 @@ export interface ComponentResult {
   heatW: number;
   /** Group or zone whose air sets the temperature. */
   via: string;
+  /** How the temperature follows the air, and the component's own rise above it, K. */
+  air: AirTerm;
+  selfRiseK: number;
 }
 
 export interface FlowResult {
@@ -323,7 +326,7 @@ export function solveNetwork(input: NetworkInput): FlowResult {
     const allowed = c.limitC - amb - c.selfRiseK;
     const adequacy = allowed <= 0 ? 0 : allowed / Math.max(airRise, 1e-6);
     const margin = (c.limitC - tempC) / Math.max(1, c.limitC - amb);
-    return { id: c.id, label: c.label, tempC, limitC: c.limitC, headroomK: c.limitC - tempC, margin, adequacy: Math.min(adequacy, 50), heatW: c.heatW, via };
+    return { id: c.id, label: c.label, tempC, limitC: c.limitC, headroomK: c.limitC - tempC, margin, adequacy: Math.min(adequacy, 50), heatW: c.heatW, via, air: c.air, selfRiseK: c.selfRiseK };
   };
   const components: ComponentResult[] = [];
   groups.forEach((g, i) => {

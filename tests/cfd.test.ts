@@ -141,3 +141,23 @@ describe('recirculation and deflectors', () => {
     expect(deflected).toBeLessThan(plain);
   });
 });
+
+describe('flow-shaping optimiser', () => {
+  it('keeps a structure only when it beats the uncertainty, and drops walls that do nothing in 3D', async () => {
+    const { COOLERS, GPUS } = await import('../src/model/presets');
+    const { optimiseShaping, STRUCTURE_MIN_GAIN } = await import('../src/cfd/run');
+    const cfg = defaultConfig();
+    cfg.parts.gpu = structuredClone(GPUS.find((g) => g.cooling === 'air')!);
+    cfg.parts.cooler = structuredClone(COOLERS.find((c) => c.kind === 'air-tower')!);
+    const d = solve(cfg, { wrapMetrics: false }).designs.find((x) => x.chamber)!;
+    const r = optimiseShaping(d, cfg);
+    let margin = r.baselineThermal.worstMargin;
+    for (const s of r.steps) {
+      if (!s.kept) continue;
+      if (s.kind === 'no-partition') expect(s.margin).toBeGreaterThanOrEqual(margin - STRUCTURE_MIN_GAIN);
+      else expect(s.margin).toBeGreaterThan(margin + STRUCTURE_MIN_GAIN);
+      margin = s.margin;
+    }
+    expect(r.bestThermal.worstMargin).toBeCloseTo(margin, 6);
+  });
+});
