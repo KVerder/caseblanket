@@ -109,6 +109,8 @@ export function Explorer({
   const scored3d: Record<string, CfdThermal> = { ...score.results };
   for (const r of check.results) scored3d[r.id] ??= r.thermal;
   const in3d = view3d && yMode === 'margin' && Object.keys(scored3d).length > 0;
+  // Parts that dump their heat into the case air: the zone model can't rank those layouts reliably.
+  const caseAirHeated = cfg.parts.cooler.kind === 'air-tower' || cfg.parts.gpu.cooling === 'air';
 
   const toPt = (d: Design): Pt => {
     const n = d.noise[load];
@@ -268,8 +270,10 @@ export function Explorer({
           : `smaller case, and more of the tightest part's temperature budget left${cfg.prefs.noiseMode === 'budget' ? ` with the fans held to ${cfg.prefs.noiseBudgetDb} dB(A)` : ''}.`}{' '}
         The line joins the designs nothing else beats on both.
         {in3d
-          ? ` Scored by short 3D simulations of ${Object.keys(scored3d).length} designs (about 1.4 s of airflow each; a gain between two designs is uncertain by about ±55 %).`
-          : ' Scored by the fast airflow model, which ranks designs differently from the 3D simulation: score the frontier in 3D before choosing.'}
+          ? ` Scored by 3D simulations of ${Object.keys(scored3d).length} designs, each run until its temperatures settle (1.4–8 s of airflow; a gain between two designs is uncertain by about ±55 %).`
+          : caseAirHeated
+            ? ` Scored by the fast airflow model. With ${cfg.parts.cooler.kind === 'air-tower' ? 'a tower cooler' : 'an air-cooled card'} heating the case air, its ranking agrees poorly with the 3D simulation (where the cooler sits against the vents matters, and the model can't see it): score the frontier in 3D before choosing.`
+            : ' Scored by the fast airflow model; with the heat leaving through radiators its ranking agrees well with the 3D simulation (rank correlation 0.95 in tests).'}
         {outs.length > 0 && ` ${outs.length} design${outs.length > 1 ? 's' : ''} ${yMode === 'noise' ? "can't keep every part under its limit at any speed" : "can't meet the noise budget"} (hollow, along the bottom).`}
       </p>
 

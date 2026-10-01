@@ -266,6 +266,8 @@ export interface AdvancedModel {
   dustFilterLossK: number;
   /** Radiator effectiveness used for the coolant estimate. */
   radEffectiveness: number;
+  /** Share of an internal fan's intake that is its own exhaust (e.g. a tower cooler in the case air). */
+  internalRecirculation: number;
   /** Share of rated CPU / GPU power drawn at each load profile. */
   loads: Record<LoadProfileId, { cpu: number; gpu: number }>;
   /** Temperature limits per component, °C. */

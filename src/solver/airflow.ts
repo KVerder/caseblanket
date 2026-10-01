@@ -77,6 +77,8 @@ export interface ZoneInput {
   leakArea: number;
   /** Components rated against this zone's air temperature. */
   components: ComponentSpec[];
+  /** Height the zone's openings span, m: drives the buoyant (stack) exchange through them. */
+  heightM?: number;
 }
 
 export interface LinkInput {
@@ -93,6 +95,12 @@ export interface NetworkInput {
   groups: FanGroupInput[];
   ambientC: number;
   radEffectiveness: number;
+  /**
+   * Share of an internal fan's intake that is its own exhaust (a fan moving case air inside the
+   * case re-ingests what it just warmed; a perfectly mixed zone would say 0). Estimate, fitted to
+   * the 3D simulation.
+   */
+  internalRecirculation?: number;
 }
 
 export interface GroupResult {
@@ -301,12 +309,49 @@ export function solveNetwork(input: NetworkInput): FlowResult {
   zones.forEach((_, k) => {
     if (inflow[k] < TRICKLE) add(k, TRICKLE - inflow[k], -1, 0);
   });
-  const rise = solveLinear(A, b) ?? new Array(K).fill(0);
+  // Buoyant (stack) exchange through each zone's openings: warm air leaves high, room air enters
+  // low, Δp = ρ·g·(H/2)·ΔT/T across two halves of the openings in series (vents spread over the
+  // height). It adds to the forced through-flow as √(Qf² + Qs²) and is solved with the temperatures.
+  const fresh = zones.map((_, k) => {
+    let f = Math.max(0, passive[k]);
+    groups.forEach((g, i) => {
+      if (zoneOf(g.sink) === k && zoneOf(g.source) < 0) f += q[i];
+    });
+    return f;
+  });
+  const stack = (k: number, riseK: number) => {
+    const z = zones[k];
+    const H = z.heightM ?? 0;
+    const area = passiveArea(z);
+    if (H <= 0 || area <= 0 || riseK <= 0) return 0;
+    const dp = RHO * 9.81 * (H / 2) * (riseK / (273.15 + input.ambientC));
+    return (area / 2) * Math.sqrt(dp / (RHO * Math.max(0.5, passiveZeta(z))));
+  };
+  const solveRise = (extra: number[]) => {
+    const A2 = A.map((row, i) => row.map((x, j) => (i === j ? x + extra[i] : x)));
+    return solveLinear(A2, b) ?? new Array(K).fill(0);
+  };
+  let rise = solveRise(new Array(K).fill(0));
+  if (zones.some((z) => (z.heightM ?? 0) > 0)) {
+    for (let it = 0; it < 40; it++) {
+      const extra = zones.map((_, k) => {
+        const qs = stack(k, Math.max(0, rise[k]));
+        return Math.sqrt(fresh[k] * fresh[k] + qs * qs) - fresh[k];
+      });
+      const next = solveRise(extra);
+      const change = Math.max(...next.map((x, i) => Math.abs(x - rise[i])));
+      rise = rise.map((x, i) => 0.5 * x + 0.5 * next[i]);
+      if (change < 0.01) break;
+    }
+  }
 
   const riseAt = (e: Endpoint) => (zoneOf(e) < 0 ? 0 : rise[zoneOf(e)]);
+  const recirc = Math.max(0, Math.min(0.9, input.internalRecirculation ?? 0));
   const groupResults: GroupResult[] = groups.map((g, i) => {
-    const inletRise = riseAt(g.source);
     const delta = q[i] > 1e-6 ? g.heatW / (RHO * CP * q[i]) : g.heatW > 0 ? 999 : 0;
+    // An internal fan (case air in, case air out) re-ingests part of its own exhaust.
+    const internal = zoneOf(g.source) >= 0 && zoneOf(g.source) === zoneOf(g.sink);
+    const inletRise = riseAt(g.source) + (internal && delta < 999 ? (recirc / (1 - recirc)) * delta : 0);
     const { qmax, pmax } = fanCurve(g.fan, g.fanCount, g.speed ?? 1);
     return {
       id: g.id,
@@ -468,6 +513,9 @@ export interface FlowInput {
   caseComponents?: ComponentSpec[];
   /** Leakage on top of the seams, m² (glued joints of a printed shell). */
   extraLeakArea?: number;
+  /** Height of the case's openings, m (stack exchange). */
+  heightM?: number;
+  internalRecirculation?: number;
 }
 
 /** One-zone case: every 'case' endpoint is the same well-mixed air. */
@@ -485,11 +533,12 @@ export function flowNetwork(input: FlowInput): NetworkInput {
   );
   return {
     zones: [
-      { id: 'case', label: 'Case', heatW: input.internalHeatW, passiveArea: input.passiveArea, passiveZeta: input.passiveZeta, leakArea: 0.001 + (input.extraLeakArea ?? 0), components: comps },
+      { id: 'case', label: 'Case', heatW: input.internalHeatW, passiveArea: input.passiveArea, passiveZeta: input.passiveZeta, leakArea: 0.001 + (input.extraLeakArea ?? 0), components: comps, heightM: input.heightM },
     ],
     links: [],
     groups,
     ambientC: input.ambientC,
     radEffectiveness: input.radEffectiveness,
+    internalRecirculation: input.internalRecirculation,
   };
 }

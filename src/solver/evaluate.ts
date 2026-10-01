@@ -588,6 +588,8 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   }
   if (combos.length === 0) combos.push([]);
   const passiveZeta = perforatedPlateZeta(vs.openRatio) + (prefs.dustFilters ? advanced.dustFilterLossK : 0);
+  // Vertical axis (solver): v in a tower, t on its side.
+  const upAxis = prefs.orientation === 'tower' ? 1 : 2;
   // A printed shell is cut into pieces that fit the build volume; its glued joints leak a little.
   const jointLeak = printJointLeak(interior, wall, MATERIALS.find((m) => m.id === prefs.materialId), prefs.buildVolume, prefs.jointGapMm);
   const effectiveTopology: TopologyId = two && !hasB ? (topology === 'sandwich' ? 'flat' : 'direct') : topology;
@@ -625,11 +627,13 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
           passiveZeta,
           leakArea: (CASE_LEAK + jointLeak) * wallShare(layoutDesign, c.box),
           components: net.caseComps.filter((cc) => zoneOfPart(net.compPart[cc.id] ?? 'board') === k),
+          heightM: (c.box.max[upAxis] - c.box.min[upAxis]) / 1000,
         })),
         links: layout.links.map((l) => ({ ...l, zeta: 2.5 })),
         groups: groups.map((g) => ({ ...g, source: mapEnd(g.source, g.id), sink: mapEnd(g.sink, g.id) })),
         ambientC: prefs.ambientC,
         radEffectiveness: advanced.radEffectiveness,
+        internalRecirculation: advanced.internalRecirculation,
       };
     }
     return flowNetwork({
@@ -642,6 +646,8 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       radEffectiveness: advanced.radEffectiveness,
       caseComponents: net.caseComps,
       extraLeakArea: jointLeak,
+      heightM: interior[upAxis] / 1000,
+      internalRecirculation: advanced.internalRecirculation,
     });
   };
   const solveAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null, speeds?: Record<string, number>) =>

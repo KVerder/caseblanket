@@ -140,3 +140,29 @@ describe('zone network', () => {
     expect(r.zones[2].riseC).toBeGreaterThan(0);
   });
 });
+
+describe('mixing corrections', () => {
+  const base = { internalHeatW: 40, passiveArea: 0.01, passiveZeta: perforatedPlateZeta(0.5), ambientC: 25, targetRiseC: 15, radEffectiveness: 0.7 };
+  it('bounds a fanless zone by its stack exchange, better the taller it is', () => {
+    const still = solveFlow({ ...base, groups: [] });
+    const short = solveFlow({ ...base, groups: [], heightM: 0.1 });
+    const tall = solveFlow({ ...base, groups: [], heightM: 0.4 });
+    // Without buoyancy only the seam trickle carries the heat away.
+    expect(still.zones[0].riseC).toBeGreaterThan(30);
+    expect(short.zones[0].riseC).toBeLessThan(still.zones[0].riseC);
+    expect(tall.zones[0].riseC).toBeLessThan(short.zones[0].riseC);
+    // Stack balance: the exchange carries the heat at the rise it sets (Q·ρ·cp·ΔT = P).
+    const dT = tall.zones[0].riseC;
+    const q = (0.01 / 2) * Math.sqrt((RHO * 9.81 * 0.2 * (dT / 298.15)) / (RHO * perforatedPlateZeta(0.5)));
+    expect(q * RHO * CP * dT).toBeGreaterThan(40 * 0.5);
+  });
+  it('lets an internal fan re-ingest its own exhaust', () => {
+    const g: FanGroupInput = { id: 'cpu', label: 'CPU', heatW: 100, fan: FANS.a12x25, fanCount: 1, source: 'case', sink: 'case', losses: [{ label: 'fins', zeta: 2, area: 0.0144 }], isRadiator: false };
+    const mixed = solveFlow({ ...base, groups: [g] });
+    const recirc = solveFlow({ ...base, groups: [g], internalRecirculation: 0.5 });
+    const a = mixed.groups[0];
+    const b = recirc.groups[0];
+    expect(b.inletRiseC - a.inletRiseC).toBeCloseTo(b.deltaC, 6); // r/(1−r) = 1 at r = 0.5
+    expect(recirc.zones[0].riseC).toBeCloseTo(mixed.zones[0].riseC, 9); // the zone's heat balance is unchanged
+  });
+});

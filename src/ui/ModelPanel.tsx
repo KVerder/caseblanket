@@ -69,6 +69,16 @@ export function ModelPanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Des
           <NumberField id="k-psu" label="PSU internals" value={a.psuLossK} min={0.5} max={30} step={0.5} onChange={(v) => set('psuLossK', v)} />
           <NumberField id="k-filter" label="Dust filter" value={a.dustFilterLossK} min={0} max={20} step={0.5} onChange={(v) => set('dustFilterLossK', v)} />
           <NumberField id="k-eff" label="Radiator ε" value={a.radEffectiveness} min={0.2} max={1} step={0.05} onChange={(v) => set('radEffectiveness', v)} hint="Heat-exchanger effectiveness, only used for the coolant estimate" />
+          <NumberField
+            id="k-recirc"
+            label="Internal fan re-ingestion"
+            value={a.internalRecirculation}
+            min={0}
+            max={0.9}
+            step={0.05}
+            onChange={(v) => set('internalRecirculation', v)}
+            hint="Share of a fan's intake that is its own exhaust when it moves case air inside the case (a tower cooler); fitted to the 3D simulation"
+          />
         </Grid>
         <button type="button" className="btn ghost small" onClick={() => setCfg(produce(cfg, (d) => void (d.advanced = structuredClone(DEFAULT_ADVANCED))))}>
           Reset model values

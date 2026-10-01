@@ -36,6 +36,34 @@ export function simulate(design: Design, cfg: DesignConfig, shaping: Shaping, op
   return { ...sim.stats(), quality: sim.quality() };
 }
 
+/**
+ * Run until the parts' temperatures settle: at least `minSeconds` of airflow, then every 0.5 s check
+ * the tightest part's headroom, and stop once it has moved less than `tolK` over the last second
+ * (or at `maxSeconds`). Poorly ventilated cases take several seconds to heat up; well ventilated
+ * ones settle in about one.
+ */
+export function simulateSteady(design: Design, cfg: DesignConfig, shaping: Shaping, opts: { cells?: number; minSeconds?: number; maxSeconds?: number; tolK?: number } = {}) {
+  const scene = buildScene(design, cfg, shaping, { cells: opts.cells });
+  const sim = new FlowSolver(scene);
+  const dt = sim.suggestDt();
+  const minS = opts.minSeconds ?? 1.4;
+  const maxS = opts.maxSeconds ?? 8;
+  const tol = opts.tolK ?? 0.5;
+  const history: number[] = [];
+  let t = 0;
+  let next = minS;
+  for (;;) {
+    sim.step(dt);
+    t += dt;
+    if (t < next) continue;
+    const th = cfdComponents(design, cfg, sim.stats());
+    history.push(th.worstHeadroomK);
+    next += 0.5;
+    const settled = history.length >= 3 && Math.abs(history[history.length - 1] - history[history.length - 3]) < tol;
+    if (settled || t >= maxS) return { stats: { ...sim.stats(), quality: sim.quality() }, thermal: th, seconds: t, settled };
+  }
+}
+
 export interface ShapingStep {
   label: string;
   kind: 'louvre' | 'duct' | 'flip' | 'partition' | 'no-partition';
@@ -83,7 +111,8 @@ export const UNRESOLVED_STRUCTURES = [
  * when removing them costs less than that.
  */
 export function optimiseShaping(design: Design, cfg: DesignConfig, progress?: (done: number, total: number, label: string) => void): ShapingResult {
-  const quick = (s: Shaping) => simulate(design, cfg, s, { cells: 9000, seconds: 1.4 });
+  // Each option run until its temperatures settle, so slow-heating layouts are compared at steady state.
+  const quick = (s: Shaping) => simulateSteady(design, cfg, s, { cells: 9000, minSeconds: 1.4, maxSeconds: 8 }).stats;
   const mat = MATERIALS.find((m) => m.id === cfg.prefs.materialId) ?? MATERIALS[0];
   const candidates: { label: string; kind: ShapingStep['kind']; weightKg: number; apply: (s: Shaping) => Shaping }[] = [];
   for (const l of louvreCandidates(design)) {

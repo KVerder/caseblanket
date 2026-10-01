@@ -203,7 +203,9 @@ for (const [name, vp, opts] of [
   const r1 = await ring();
   check(Math.abs(r1 - target) < 1, `${name}: ${opts.touch ? 'tapping' : 'clicking'} a point selects that design (ring ${r0.toFixed(0)} → ${r1.toFixed(0)})`);
   if (!opts.touch) {
-    await page.mouse.move(box.x + box.width / 2 + 2, box.y + box.height / 2);
+    // Selecting re-renders the results above and can shift the chart: hover where the selected point is now.
+    const now = await ex.locator('circle.sel-ring').boundingBox();
+    await page.mouse.move(now.x + now.width / 2 + 2, now.y + now.height / 2);
     await page.waitForTimeout(200);
     check((await ex.locator('.viz-tip').count()) === 1, `${name}: hovering a point shows its tooltip`);
   }

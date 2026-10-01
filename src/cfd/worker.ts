@@ -1,9 +1,9 @@
 /// <reference lib="webworker" />
 import type { DesignConfig } from '../model/types';
 import type { Design } from '../solver/evaluate';
-import { optimiseShaping, simulate } from './run';
+import { optimiseShaping, simulate, simulateSteady } from './run';
+import type { CfdThermal } from './components';
 import { NO_SHAPING, type Shaping } from './scene';
-import { cfdComponents } from './components';
 
 type Req =
   | { id: number; kind: 'simulate'; design: Design; cfg: DesignConfig; shaping: Shaping }
@@ -24,11 +24,12 @@ self.onmessage = (e: MessageEvent<Req>) => {
       });
     } else if (req.kind === 'check') {
       // Short runs of several designs, to compare the 3D sim with the airflow model.
-      const out: { id: string; thermal: ReturnType<typeof cfdComponents> }[] = [];
+      const out: { id: string; thermal: CfdThermal }[] = [];
       req.designs.forEach((d, i) => {
         post({ id: req.id, progress: { done: i, total: req.designs.length, label: d.id } });
-        const st = simulate(d, req.cfg, NO_SHAPING, { cells: 9000, seconds: 1.4 });
-        out.push({ id: d.id, thermal: cfdComponents(d, req.cfg, st) });
+        // Until the temperatures settle: a poorly ventilated case keeps heating for several seconds.
+        const r = simulateSteady(d, req.cfg, NO_SHAPING, { cells: 9000, minSeconds: 1.4, maxSeconds: 8 });
+        out.push({ id: d.id, thermal: r.thermal });
       });
       post({ id: req.id, checks: out });
     } else {

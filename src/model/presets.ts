@@ -481,6 +481,7 @@ export const DEFAULT_ADVANCED: AdvancedModel = {
   psuLossK: 4,
   dustFilterLossK: 2,
   radEffectiveness: 0.7,
+  internalRecirculation: 0.7,
   // All estimates (typical values, not from a specific part's datasheet); edit in the Model tab.
   loads: { gaming: { cpu: 0.5, gpu: 0.9 }, full: { cpu: 1, gpu: 1 } },
   limits: { cpu: 95, gpuCore: 83, gpuMem: 95, psuInlet: 40, caseAir: 50 },
