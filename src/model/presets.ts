@@ -443,6 +443,7 @@ export const DEFAULT_PREFS: Preferences = {
   maxDepth: 0,
   ambientC: 25,
   targetRiseC: 12,
+  loadProfile: 'gaming',
   feetHeight: 8,
   spineThickness: 2,
   finish: '#2b2d31',
@@ -459,6 +460,10 @@ export const DEFAULT_ADVANCED: AdvancedModel = {
   psuLossK: 4,
   dustFilterLossK: 2,
   radEffectiveness: 0.7,
+  // All estimates (typical values, not from a specific part's datasheet); edit in the Model tab.
+  loads: { gaming: { cpu: 0.5, gpu: 0.9 }, full: { cpu: 1, gpu: 1 } },
+  limits: { cpu: 95, gpuCore: 83, gpuMem: 95, psuInlet: 40, caseAir: 50 },
+  rth: { cpuToCoolant: 0.35, gpuToCoolant: 0.06, cpuToAir: 0.35, gpuToAir: 0.12, gpuMemToAir: 0.6 },
 };
 
 export function defaultConfig(): DesignConfig {

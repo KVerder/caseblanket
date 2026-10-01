@@ -164,6 +164,32 @@ export interface VentStyle {
 
 export type ShellKind = 'box' | 'wrap';
 
+export type LoadProfileId = 'gaming' | 'full';
+
+export interface ComponentLimits {
+  cpu: number;
+  gpuCore: number;
+  /** GPU memory and VRM on the card (AIO cards' own fan, air cards' cooler). */
+  gpuMem: number;
+  /** Air entering the PSU. */
+  psuInlet: number;
+  /** Case air around the board VRM, chipset and SSD. */
+  caseAir: number;
+}
+
+export interface ComponentResistances {
+  /** CPU die to AIO coolant. */
+  cpuToCoolant: number;
+  /** GPU die to AIO coolant. */
+  gpuToCoolant: number;
+  /** CPU die to the air through an air cooler. */
+  cpuToAir: number;
+  /** GPU die to the air through an air-cooled card's heatsink. */
+  gpuToAir: number;
+  /** GPU memory/VRM to the air the card's fan moves, per watt the card dumps. */
+  gpuMemToAir: number;
+}
+
 export interface Preferences {
   /** 0 = compactness only, 1 = airflow only. */
   airflowPriority: number;
@@ -200,6 +226,8 @@ export interface Preferences {
   maxHeight: number;
   maxDepth: number;
   ambientC: number;
+  /** Load the design is rated at: typical gaming or sustained full load. */
+  loadProfile: LoadProfileId;
   /** Allowed air temperature rise leaving any heat exchanger. */
   targetRiseC: number;
   feetHeight: number;
@@ -224,6 +252,12 @@ export interface AdvancedModel {
   dustFilterLossK: number;
   /** Radiator effectiveness used for the coolant estimate. */
   radEffectiveness: number;
+  /** Share of rated CPU / GPU power drawn at each load profile. */
+  loads: Record<LoadProfileId, { cpu: number; gpu: number }>;
+  /** Temperature limits per component, °C. */
+  limits: ComponentLimits;
+  /** Thermal resistances from a component to its air or coolant, K/W. */
+  rth: ComponentResistances;
 }
 
 export interface DesignConfig {

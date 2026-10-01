@@ -14,7 +14,7 @@ import { ModelPanel } from './ui/ModelPanel';
 import { PartsPanel } from './ui/PartsPanel';
 import { PrintDialog } from './ui/PrintDialog';
 import { SimPanel } from './ui/SimPanel';
-import { AirflowTable, Candidates, Checks, Summary } from './ui/ResultsPanel';
+import { AirflowTable, Candidates, Checks, Summary, Temperatures } from './ui/ResultsPanel';
 import { TunePanel } from './ui/TunePanel';
 import { ViewerPanel } from './ui/ViewerPanel';
 
@@ -198,6 +198,7 @@ export default function App() {
   const results = design && result && (
     <>
       <Summary d={design} cfg={cfg} />
+      <Temperatures d={design} cfg={cfg} />
       <AirflowTable d={design} cfg={cfg} />
       <SimPanel design={design} cfg={cfg} viewer={() => viewerRef.current} />
       <Checks d={design} />

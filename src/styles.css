@@ -1522,3 +1522,11 @@ dialog.print .catalog-foot {
   display: flex;
   justify-content: flex-end;
 }
+
+/* Component temperatures: colour by the share of each part's budget left. */
+.temps td.temp.good { color: var(--good); }
+.temps td.temp.fair { color: var(--warn); }
+.temps td.temp.bad { color: var(--bad); font-weight: 600; }
+.temps th.sel,
+.temps td.sel { font-weight: 600; }
+.temps td.temp:not(.sel) { opacity: 0.75; }

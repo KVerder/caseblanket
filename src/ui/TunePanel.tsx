@@ -239,10 +239,22 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
       </Section>
 
       <Section title="Thermal targets">
+        <Segmented
+          label="Rate the design at"
+          value={p.loadProfile}
+          options={[
+            { value: 'gaming', label: 'Typical gaming' },
+            { value: 'full', label: 'Sustained full load' },
+          ]}
+          onChange={(v) => set('loadProfile', v)}
+        />
         <Grid>
           <NumberField id="ambient" label="Room" unit="°C" value={p.ambientC} min={0} max={45} onChange={(v) => set('ambientC', v)} />
-          <NumberField id="rise" label="Allowed air rise" unit="°C" value={p.targetRiseC} min={3} max={30} onChange={(v) => set('targetRiseC', v)} hint="How much warmer than the room the air leaving any radiator, cooler or the case may be" />
         </Grid>
+        <p className="muted small">
+          Each part is rated against its own temperature limit (Model tab). Results show both loads; this choice decides which one ranks
+          the designs.
+        </p>
       </Section>
     </div>
   );

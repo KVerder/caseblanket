@@ -54,3 +54,36 @@ describe('airflow model', () => {
     expect(r.groups[1].exitRiseC).toBeCloseTo(r.caseRiseC, 6);
   });
 });
+
+describe('component temperatures', () => {
+  it('rates each component against its own limit, with its own internal rise', async () => {
+    const { solveNetwork } = await import('../src/solver/airflow');
+    const r = solveNetwork({
+      zones: [{ id: 'case', label: 'Case', heatW: 0, passiveArea: 0.01, passiveZeta: 2, leakArea: 0.001, components: [] }],
+      links: [],
+      groups: [
+        {
+          id: 'rad',
+          label: 'Radiator',
+          heatW: 300,
+          fan: FANS.a12x25,
+          fanCount: 3,
+          source: 'outside',
+          sink: 'outside',
+          losses: [{ label: 'core', zeta: 13, area: 0.12 * 0.36 }],
+          isRadiator: true,
+          component: { id: 'gpu', label: 'GPU core', limitC: 83, selfRiseK: 300 * 0.06, air: 'coolant', heatW: 300 },
+        },
+      ],
+      ambientC: 25,
+      radEffectiveness: 0.7,
+    });
+    const g = r.groups[0];
+    const c = r.components[0];
+    // coolant = air rise / effectiveness; part = room + coolant + P·R
+    expect(c.tempC).toBeCloseTo(25 + g.deltaC / 0.7 + 18, 6);
+    expect(c.headroomK).toBeCloseTo(83 - c.tempC, 6);
+    expect(c.margin).toBeCloseTo((83 - c.tempC) / (83 - 25), 6);
+    expect(r.worstComponent).toBe('GPU core');
+  });
+});

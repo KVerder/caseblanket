@@ -1,5 +1,5 @@
 import { MATERIALS } from '../model/presets';
-import type { DesignConfig } from '../model/types';
+import type { DesignConfig, LoadProfileId } from '../model/types';
 import { M3S_TO_CFM } from '../solver/airflow';
 import { TOPOLOGY_LABELS, type Design } from '../solver/evaluate';
 import type { SolveResult } from '../solver/solve';
@@ -68,8 +68,10 @@ export function Summary({ d, cfg }: { d: Design; cfg: DesignConfig }) {
           <dd>≈ {ol.weightKg.toFixed(2)} kg</dd>
         </div>
         <div>
-          <dt>Case air</dt>
-          <dd>+{d.flow.caseRiseC.toFixed(1)} °C</dd>
+          <dt>Tightest part</dt>
+          <dd title={`${d.flow.worstComponent}: ${d.flow.worstHeadroomK.toFixed(0)} K below its limit at ${LOAD_LABEL[cfg.prefs.loadProfile]} load`}>
+            {Math.round(d.flow.worstMargin * 100)}% left
+          </dd>
         </div>
       </dl>
       <p className="muted small">
@@ -77,6 +79,66 @@ export function Summary({ d, cfg }: { d: Design; cfg: DesignConfig }) {
         {ol.wrapped ? `, shrinkwrapped (box envelope ${mm(d.world.width)} × ${mm(d.world.height)} × ${mm(d.world.depth)}, ${d.volumeL.toFixed(1)} L)` : ''}
         {d.wrap?.smoothingL !== undefined ? `; smoothness adds ${d.wrap.smoothingL.toFixed(1)} L` : ''}
         {d.feet ? `, ${d.feet} mm feet for the bottom vents` : ''}.
+      </p>
+    </section>
+  );
+}
+
+export const LOAD_LABEL: Record<LoadProfileId, string> = { gaming: 'typical gaming', full: 'sustained full' };
+
+function marginClass(m: number) {
+  return m >= 0.3 ? 'good' : m >= 0.1 ? 'fair' : 'bad';
+}
+
+/** Every component's predicted temperature against its own limit, at both loads. */
+export function Temperatures({ d, cfg }: { d: Design; cfg: DesignConfig }) {
+  const sel = cfg.prefs.loadProfile;
+  const loads: LoadProfileId[] = ['gaming', 'full'];
+  const rows = d.thermal[sel].components;
+  const at = (id: LoadProfileId, cid: string) => d.thermal[id].components.find((c) => c.id === cid);
+  return (
+    <section className="airflow temps" aria-label="Component temperatures">
+      <div className="section-head">
+        <h3>Component temperatures</h3>
+        <span className="muted small">estimate, {cfg.prefs.ambientC} °C room</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Component</th>
+            {loads.map((l) => (
+              <th key={l} scope="col" className={`num${l === sel ? ' sel' : ''}`}>
+                {l === 'gaming' ? 'Gaming' : 'Full'}
+              </th>
+            ))}
+            <th scope="col" className="num">
+              Limit
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <th scope="row">
+                <span className="path-name">{r.label}</span>
+                <span className="path-sub">{Math.round(r.heatW)} W at {LOAD_LABEL[sel]} load</span>
+              </th>
+              {loads.map((l) => {
+                const c = at(l, r.id);
+                return (
+                  <td key={l} className={`num temp ${c ? marginClass(c.margin) : ''}${l === sel ? ' sel' : ''}`}>
+                    {c ? `${Math.round(c.tempC)}°` : '—'}
+                  </td>
+                );
+              })}
+              <td className="num muted">{r.limitC}°</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="muted small">
+        Air or coolant temperature from the airflow model plus each part's own rise (power × an estimated thermal resistance). Limits and
+        resistances are estimates, editable in the Model tab. Colour: share of each part's budget (limit − room) left.
       </p>
     </section>
   );
@@ -109,7 +171,7 @@ export function AirflowTable({ d, cfg }: { d: Design; cfg: DesignConfig }) {
     <section className="airflow" aria-label="Airflow estimate">
       <div className="section-head">
         <h3>Airflow estimate</h3>
-        <span className="muted small">vs. +{cfg.prefs.targetRiseC} °C allowed</span>
+        <span className="muted small">at {LOAD_LABEL[cfg.prefs.loadProfile]} load</span>
       </div>
       <table>
         <thead>
@@ -121,7 +183,7 @@ export function AirflowTable({ d, cfg }: { d: Design; cfg: DesignConfig }) {
             <th scope="col" className="num">
               Out
             </th>
-            <th scope="col">Headroom</th>
+            <th scope="col">Part's margin</th>
           </tr>
         </thead>
         <tbody>

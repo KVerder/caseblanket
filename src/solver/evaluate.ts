@@ -1,7 +1,7 @@
 import { MATERIALS, VENT_STYLES } from '../model/presets';
-import type { DesignConfig, FanSpec, RadiatorSpec, TopologyId } from '../model/types';
+import type { DesignConfig, FanSpec, RadiatorSpec, TopologyId , LoadProfileId } from '../model/types';
 import { HOSE_MIN_BEND, hosePaths, minBendRadius, pathLength } from './hoses';
-import { perforatedPlateZeta, solveFlow, type FanGroupInput, type FlowResult, type LossTerm } from './airflow';
+import { perforatedPlateZeta, solveFlow, type ComponentSpec, type FanGroupInput, type FlowResult, type LossTerm } from './airflow';
 import {
   axisOf,
   localToWorld,
@@ -75,6 +75,8 @@ export interface Design {
   vents: Vent[];
   spine?: [number, number];
   flow: FlowResult;
+  /** The same design rated at both load profiles (flow is the selected one). */
+  thermal: Record<LoadProfileId, FlowResult>;
   groupParts: Record<string, string>;
   checks: Check[];
   invalid: boolean;
@@ -361,109 +363,123 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
 
   const gpuSpec = cfg.parts.gpu;
   const psuSpec = cfg.parts.psu;
-  const dcLoad = cooler.cpuPowerW + gpuSpec.boardPowerW + bp.heatW + cfg.parts.extras.reduce((a, e) => a + e.heatW, 0);
-  const psuLoss = Math.min(dcLoad, psuSpec.ratedW) * (1 / Math.max(0.5, psuSpec.efficiency) - 1);
+  const { limits: tLimits, rth } = advanced;
 
   const groupParts: Record<string, string> = {};
-  const baseGroups: FanGroupInput[] = [];
   const radParts: PlacedPart[] = [];
-
-  // CPU
-  if (cooler.kind === 'air-downdraft') {
-    const atWall = board.faceAtWall && vents.some((v) => v.groupId === 'cpu');
-    const losses: LossTerm[] = [
-      { label: 'fin stack', zeta: advanced.finStackLossK, area: cooler.width * cooler.depth * MM2 },
-      { label: 'fan proximity', zeta: prox(atWall ? board.faceGap : 30, cooler.fan), area: fanArea(cooler.fan, 1) },
-    ];
-    if (atWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor('cpu') });
-    baseGroups.push({
-      id: 'cpu',
-      label: 'CPU cooler',
-      heatW: cooler.cpuPowerW,
-      fan: cooler.fan,
-      fanCount: 1,
-      source: atWall ? 'outside' : 'case',
-      sink: 'case',
-      losses,
-      isRadiator: false,
-    });
-    groupParts.cpu = 'board';
-    board.airflow = atWall ? 'in' : 'internal';
-  } else if (cooler.kind === 'air-tower') {
-    baseGroups.push({
-      id: 'cpu',
-      label: 'CPU cooler',
-      heatW: cooler.cpuPowerW,
-      fan: cooler.fan,
-      fanCount: 1,
-      source: 'case',
-      sink: 'case',
-      losses: [{ label: 'fin stack', zeta: advanced.finStackLossK, area: cooler.width * cooler.height * MM2 }],
-      isRadiator: false,
-    });
-    groupParts.cpu = 'board';
-    board.airflow = 'internal';
-  }
-
-  // GPU card fan
-  const gpuCardHeat = gpuSpec.cooling === 'aio' ? gpuSpec.boardPowerW * (1 - gpuSpec.radiatorHeatShare) : gpuSpec.boardPowerW;
-  let internalHeat = bp.heatW + cfg.parts.extras.reduce((a, e) => a + e.heatW, 0);
-  if (gpuSpec.cardFan) {
-    const atWall = gpu.faceAtWall && vents.some((v) => v.groupId === 'gpu');
-    const losses: LossTerm[] = [
-      { label: 'shroud', zeta: 3, area: fanArea(gpuSpec.cardFanSpec, 1) },
-      { label: 'fan proximity', zeta: prox(atWall ? gpu.faceGap : 30, gpuSpec.cardFanSpec), area: fanArea(gpuSpec.cardFanSpec, 1) },
-    ];
-    if (atWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor('gpu') });
-    baseGroups.push({
-      id: 'gpu-card',
-      label: gpuSpec.cooling === 'aio' ? 'GPU card (VRM/VRAM fan)' : 'GPU cooler',
-      heatW: gpuCardHeat,
-      fan: gpuSpec.cardFanSpec,
-      fanCount: 1,
-      source: atWall ? 'outside' : 'case',
-      sink: 'case',
-      losses,
-      isRadiator: false,
-    });
-    groupParts['gpu-card'] = 'gpu';
-    gpu.airflow = atWall ? 'in' : 'internal';
-  } else {
-    internalHeat += gpuCardHeat;
-  }
-
-  // PSU
-  {
-    const faceAtWall = psuSpec.fanOn === 'face' && psu.faceAtWall && vents.some((v) => v.groupId === 'psu' && v.kind === 'fan');
-    const losses: LossTerm[] = [{ label: 'PSU internals', zeta: advanced.psuLossK, area: fanArea(psuSpec.fan, 1) }];
-    if (faceAtWall) {
-      losses.push({ label: 'intake vent', zeta: zVent, area: ventAreaFor('psu', psu.face) });
-      losses.push({ label: 'fan proximity', zeta: prox(psu.faceGap, psuSpec.fan), area: fanArea(psuSpec.fan, 1) });
-    }
-    if (acAtWall) losses.push({ label: 'AC-end grille', zeta: perforatedPlateZeta(0.6), area: ventAreaFor('psu', acDir) });
-    baseGroups.push({
-      id: 'psu',
-      label: 'Power supply',
-      heatW: psuLoss,
-      fan: psuSpec.fan,
-      fanCount: 1,
-      source: faceAtWall ? 'outside' : 'case',
-      sink: acAtWall ? 'outside' : 'case',
-      losses,
-      isRadiator: false,
-    });
-    groupParts.psu = 'psu';
-    psu.airflow = faceAtWall && acAtWall ? 'through' : faceAtWall ? 'in' : acAtWall ? 'out' : 'internal';
-  }
-
-  // Radiators (direction decided below)
-  const radHeat: Record<string, number> = {
-    'rad-cpu': cooler.kind === 'aio' ? cooler.cpuPowerW : 0,
-    'rad-gpu': gpuSpec.cooling === 'aio' ? gpuSpec.boardPowerW * gpuSpec.radiatorHeatShare : 0,
-  };
   for (const p of parts) if (p.kind === 'rad-cpu' || p.kind === 'rad-gpu') radParts.push(p);
 
-  const radGroup = (p: PlacedPart, dir: 'in' | 'out' | 'through'): FanGroupInput => {
+  /** Heat paths and the components they cool, at a load profile. */
+  const network = (load: { cpu: number; gpu: number }) => {
+    const cpuW = cooler.cpuPowerW * load.cpu;
+    const gpuW = gpuSpec.boardPowerW * load.gpu;
+    const extrasW = cfg.parts.extras.reduce((a, e) => a + e.heatW, 0);
+    const dcLoad = cpuW + gpuW + bp.heatW + extrasW;
+    const psuLoss = Math.min(dcLoad, psuSpec.ratedW) * (1 / Math.max(0.5, psuSpec.efficiency) - 1);
+    const groups: FanGroupInput[] = [];
+    const cpuComp = (air: 'mean' | 'coolant', r: number): ComponentSpec => ({ id: 'cpu', label: 'CPU', limitC: tLimits.cpu, selfRiseK: cpuW * r, air, heatW: cpuW });
+
+    // CPU
+    if (cooler.kind === 'air-downdraft') {
+      const atWall = board.faceAtWall && vents.some((v) => v.groupId === 'cpu');
+      const losses: LossTerm[] = [
+        { label: 'fin stack', zeta: advanced.finStackLossK, area: cooler.width * cooler.depth * MM2 },
+        { label: 'fan proximity', zeta: prox(atWall ? board.faceGap : 30, cooler.fan), area: fanArea(cooler.fan, 1) },
+      ];
+      if (atWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor('cpu') });
+      groups.push({ id: 'cpu', label: 'CPU cooler', heatW: cpuW, fan: cooler.fan, fanCount: 1, source: atWall ? 'outside' : 'case', sink: 'case', losses, isRadiator: false, component: cpuComp('mean', rth.cpuToAir) });
+      groupParts.cpu = 'board';
+      board.airflow = atWall ? 'in' : 'internal';
+    } else if (cooler.kind === 'air-tower') {
+      groups.push({
+        id: 'cpu',
+        label: 'CPU cooler',
+        heatW: cpuW,
+        fan: cooler.fan,
+        fanCount: 1,
+        source: 'case',
+        sink: 'case',
+        losses: [{ label: 'fin stack', zeta: advanced.finStackLossK, area: cooler.width * cooler.height * MM2 }],
+        isRadiator: false,
+        component: cpuComp('mean', rth.cpuToAir * 0.75),
+      });
+      groupParts.cpu = 'board';
+      board.airflow = 'internal';
+    }
+
+    // GPU: an AIO card dumps the rest of its power (memory, VRM) through its own fan or into the case air.
+    const aioGpu = gpuSpec.cooling === 'aio';
+    const cardHeat = aioGpu ? gpuW * (1 - gpuSpec.radiatorHeatShare) : gpuW;
+    const cardComp: ComponentSpec = aioGpu
+      ? { id: 'gpu-mem', label: 'GPU memory/VRM', limitC: tLimits.gpuMem, selfRiseK: cardHeat * rth.gpuMemToAir, air: 'mean', heatW: cardHeat }
+      : { id: 'gpu', label: 'GPU', limitC: tLimits.gpuCore, selfRiseK: cardHeat * rth.gpuToAir, air: 'mean', heatW: cardHeat };
+    let internalHeat = bp.heatW + extrasW;
+    const caseComps: ComponentSpec[] = [{ id: 'case-air', label: 'Board & drives (case air)', limitC: tLimits.caseAir, selfRiseK: 0, air: 'zone', heatW: Math.max(30, bp.heatW + extrasW) }];
+    if (gpuSpec.cardFan) {
+      const atWall = gpu.faceAtWall && vents.some((v) => v.groupId === 'gpu');
+      const losses: LossTerm[] = [
+        { label: 'shroud', zeta: 3, area: fanArea(gpuSpec.cardFanSpec, 1) },
+        { label: 'fan proximity', zeta: prox(atWall ? gpu.faceGap : 30, gpuSpec.cardFanSpec), area: fanArea(gpuSpec.cardFanSpec, 1) },
+      ];
+      if (atWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor('gpu') });
+      groups.push({
+        id: 'gpu-card',
+        label: aioGpu ? 'GPU card (VRM/VRAM fan)' : 'GPU cooler',
+        heatW: cardHeat,
+        fan: gpuSpec.cardFanSpec,
+        fanCount: 1,
+        source: atWall ? 'outside' : 'case',
+        sink: 'case',
+        losses,
+        isRadiator: false,
+        component: cardComp,
+      });
+      groupParts['gpu-card'] = 'gpu';
+      gpu.airflow = atWall ? 'in' : 'internal';
+    } else {
+      // No fan of its own: the card sits in case air, a few kelvin above it.
+      internalHeat += cardHeat;
+      caseComps.push({ ...cardComp, air: 'zone' });
+    }
+
+    // PSU: rated on the air it breathes in.
+    {
+      const faceAtWall = psuSpec.fanOn === 'face' && psu.faceAtWall && vents.some((v) => v.groupId === 'psu' && v.kind === 'fan');
+      const losses: LossTerm[] = [{ label: 'PSU internals', zeta: advanced.psuLossK, area: fanArea(psuSpec.fan, 1) }];
+      if (faceAtWall) {
+        losses.push({ label: 'intake vent', zeta: zVent, area: ventAreaFor('psu', psu.face) });
+        losses.push({ label: 'fan proximity', zeta: prox(psu.faceGap, psuSpec.fan), area: fanArea(psuSpec.fan, 1) });
+      }
+      if (acAtWall) losses.push({ label: 'AC-end grille', zeta: perforatedPlateZeta(0.6), area: ventAreaFor('psu', acDir) });
+      groups.push({
+        id: 'psu',
+        label: 'Power supply',
+        heatW: psuLoss,
+        fan: psuSpec.fan,
+        fanCount: 1,
+        source: faceAtWall ? 'outside' : 'case',
+        sink: acAtWall ? 'outside' : 'case',
+        losses,
+        isRadiator: false,
+        component: { id: 'psu', label: 'PSU intake air', limitC: tLimits.psuInlet, selfRiseK: 0, air: 'inlet', heatW: psuLoss },
+      });
+      groupParts.psu = 'psu';
+      psu.airflow = faceAtWall && acAtWall ? 'through' : faceAtWall ? 'in' : acAtWall ? 'out' : 'internal';
+    }
+
+    const radHeat: Record<string, number> = {
+      'rad-cpu': cooler.kind === 'aio' ? cpuW : 0,
+      'rad-gpu': aioGpu ? gpuW * gpuSpec.radiatorHeatShare : 0,
+    };
+    const radComp = (p: PlacedPart): ComponentSpec =>
+      p.kind === 'rad-cpu'
+        ? cpuComp('coolant', rth.cpuToCoolant)
+        : { id: 'gpu', label: 'GPU core', limitC: tLimits.gpuCore, selfRiseK: radHeat[p.id] * rth.gpuToCoolant, air: 'coolant', heatW: radHeat[p.id] };
+    return { groups, internalHeat, caseComps, radHeat, radComp };
+  };
+
+  // Radiators (direction decided below)
+  const radGroup = (p: PlacedPart, dir: 'in' | 'out' | 'through', heat: number, component: ComponentSpec): FanGroupInput => {
     const rad = p.radiator!;
     const fan = p.fan!;
     const coreArea = rad.length * rad.width * MM2;
@@ -483,13 +499,14 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     return {
       id: p.id,
       label: p.kind === 'rad-cpu' ? 'CPU radiator' : 'GPU radiator',
-      heatW: radHeat[p.id],
+      heatW: heat,
       fan,
       fanCount: p.fanCount!,
       source: dir === 'out' ? 'case' : 'outside',
       sink: dir === 'in' ? 'case' : 'outside',
       losses,
       isRadiator: true,
+      component,
     };
   };
 
@@ -504,25 +521,33 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     combos.push(c);
   }
   if (combos.length === 0) combos.push([]);
-  let best: { flow: FlowResult; dirs: ('in' | 'out')[] } | null = null;
   const passiveZeta = perforatedPlateZeta(vs.openRatio) + (prefs.dustFilters ? advanced.dustFilterLossK : 0);
-  for (const c of combos) {
-    const groups = [...baseGroups];
+  const solveAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[]) => {
+    const net = network(advanced.loads[profileId]);
+    const groups = [...net.groups];
     for (const p of radParts) {
       const i = wallRads.indexOf(p);
-      groups.push(radGroup(p, i < 0 ? 'through' : c[i]));
+      groups.push(radGroup(p, i < 0 ? 'through' : dirs[i], net.radHeat[p.id], net.radComp(p)));
     }
-    const flow = solveFlow({
+    return solveFlow({
       groups,
-      internalHeatW: internalHeat,
+      internalHeatW: net.internalHeat,
       passiveArea: passiveArea * MM2,
       passiveZeta,
       ambientC: prefs.ambientC,
       targetRiseC: prefs.targetRiseC,
       radEffectiveness: advanced.radEffectiveness,
+      caseComponents: net.caseComps,
     });
+  };
+  const loadId: LoadProfileId = prefs.loadProfile ?? 'gaming';
+  let best: { flow: FlowResult; dirs: ('in' | 'out')[] } | null = null;
+  for (const c of combos) {
+    const flow = solveAt(loadId, c);
     if (!best || flow.score > best.flow.score + 1e-9) best = { flow, dirs: c };
   }
+  const otherId: LoadProfileId = loadId === 'gaming' ? 'full' : 'gaming';
+  const thermal = { [loadId]: best!.flow, [otherId]: solveAt(otherId, best!.dirs) } as Record<LoadProfileId, FlowResult>;
   const flow = best!.flow;
   for (const p of radParts) {
     const i = wallRads.indexOf(p);
@@ -608,6 +633,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     vents,
     spine,
     flow,
+    thermal,
     groupParts,
     checks,
     invalid: checks.some((c) => c.level === 'error'),
