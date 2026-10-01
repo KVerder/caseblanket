@@ -423,7 +423,11 @@ export function worldSize(cfg: DesignConfig, s: Vec3) {
 }
 
 export function wrapMetrics(design: Design, cfg: DesignConfig, organic: number, detail = 0.5): WrapMetrics {
-  const m = meshShell(design, cfg, organic, 0, detail);
+  return meshMetrics(design, cfg, meshShell(design, cfg, organic, 0, detail));
+}
+
+/** Outer size, volume and panel weight of a meshed shell. */
+export function meshMetrics(design: Design, cfg: DesignConfig, m: ShellMesh): WrapMetrics {
   const size: Vec3 = [m.bbox.max[0] - m.bbox.min[0], m.bbox.max[1] - m.bbox.min[1], m.bbox.max[2] - m.bbox.min[2]];
   const world = worldSize(cfg, size);
   const mat = MATERIALS.find((x) => x.id === cfg.prefs.materialId) ?? MATERIALS[0];

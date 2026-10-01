@@ -16,6 +16,8 @@ export interface SolveOptions {
 
 export interface SolveResult {
   designs: Design[];
+  /** Every valid design evaluated (the design space), for the explorer. */
+  space: Design[];
   stats: { runs: number; evaluated: number; ms: number };
 }
 
@@ -106,7 +108,16 @@ export function solve(cfg: DesignConfig, opts: SolveOptions = {}): SolveResult {
       d.wrap = wrapMetrics(d, cfg, cfg.prefs.organic);
       if (cfg.prefs.organic > 0.02) d.wrap.smoothingL = Math.max(0, d.wrap.volumeL - wrapMetrics(d, cfg, 0).volumeL);
     }
-  return { designs, stats: { runs, evaluated: all.length, ms: performance.now() - t0 } };
+  // The design space: every valid layout, minus exact repeats (same size and thermal result).
+  const seen = new Set<string>();
+  const space = all.filter((d) => {
+    if (d.invalid) return false;
+    const k = `${d.volumeL.toFixed(2)}|${Math.round(d.thickness)}|${d.flow.worstMargin.toFixed(3)}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  return { designs, space, stats: { runs, evaluated: all.length, ms: performance.now() - t0 } };
 }
 
 const TOPO_SHORT: Record<TopologyId, string> = {

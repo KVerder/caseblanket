@@ -1,3 +1,4 @@
+import type { CfdThermal } from '../cfd/components';
 import type { SimFrame, ShapingResult } from '../cfd/run';
 import type { Shaping } from '../cfd/scene';
 import type { DesignConfig } from '../model/types';
@@ -7,6 +8,7 @@ type Handlers = {
   frame?: (f: SimFrame) => void;
   progress?: (p: { done: number; total: number; label: string }) => void;
   result?: (r: ShapingResult) => void;
+  checks?: (c: { id: string; thermal: CfdThermal }[]) => void;
   error?: (e: string) => void;
 };
 
@@ -32,13 +34,24 @@ export class CfdClient {
     }
     this.busy = true;
     this.worker.onmessage = (e) => {
-      const d = e.data as { id: number; frame?: SimFrame; progress?: { done: number; total: number; label: string }; result?: ShapingResult; error?: string };
+      const d = e.data as {
+        id: number;
+        frame?: SimFrame;
+        progress?: { done: number; total: number; label: string };
+        result?: ShapingResult;
+        checks?: { id: string; thermal: CfdThermal }[];
+        error?: string;
+      };
       if (d.id !== id) return;
       if (d.frame) {
         this.handlers.frame?.(d.frame);
         if (d.frame.done) this.busy = false;
       }
       if (d.progress) this.handlers.progress?.(d.progress);
+      if (d.checks) {
+        this.busy = false;
+        this.handlers.checks?.(d.checks);
+      }
       if (d.result) {
         this.busy = false;
         this.handlers.result?.(d.result);
@@ -62,6 +75,11 @@ export class CfdClient {
 
   optimise(design: Design, cfg: DesignConfig, h: Handlers) {
     this.start({ kind: 'optimise', design, cfg }, h);
+  }
+
+  /** Short 3D runs of several designs; reports each one's component temperatures. */
+  check(designs: Design[], cfg: DesignConfig, h: Handlers) {
+    this.start({ kind: 'check', designs, cfg }, h);
   }
 
   stop() {

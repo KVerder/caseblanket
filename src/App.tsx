@@ -8,12 +8,13 @@ import type { Design } from './solver/evaluate';
 import type { SolveResult } from './solver/solve';
 import { encodeShare, initialConfig, IS_ARTIFACT, storeConfig } from './state/config';
 import { MeshClient, type ShellResult } from './state/meshClient';
-import { isWrap } from './solver/shrinkwrap';
+import { isWrap, meshMetrics } from './solver/shrinkwrap';
 import { SolverClient } from './state/solverClient';
 import { ModelPanel } from './ui/ModelPanel';
 import { PartsPanel } from './ui/PartsPanel';
 import { PrintDialog } from './ui/PrintDialog';
 import { SimPanel } from './ui/SimPanel';
+import { Explorer } from './ui/Explorer';
 import { AirflowTable, Candidates, Chambers, Checks, Summary, Temperatures } from './ui/ResultsPanel';
 import { TunePanel } from './ui/TunePanel';
 import { ViewerPanel } from './ui/ViewerPanel';
@@ -124,7 +125,10 @@ export default function App() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  const design = useMemo(() => result?.designs.find((d) => d.id === selected) ?? result?.designs[0] ?? null, [result, selected]);
+  const design = useMemo(
+    () => result?.designs.find((d) => d.id === selected) ?? result?.space.find((d) => d.id === selected) ?? result?.designs[0] ?? null,
+    [result, selected],
+  );
 
   // Shrinkwrap the selected design's shell off the main thread.
   const meshClient = useRef<MeshClient | null>(null);
@@ -142,6 +146,8 @@ export default function App() {
     meshClient.current
       .run(design, cfg, organic)
       .then((r) => {
+        // Designs picked from the design space were not measured by the solver: use this mesh.
+        if (!design.wrap) design.wrap = meshMetrics(design, cfg, r.mesh);
         setShell({ for: design, result: r });
         setShaping(false);
       })
@@ -198,6 +204,7 @@ export default function App() {
   const results = design && result && (
     <>
       <Summary d={design} cfg={cfg} />
+      <Explorer space={result.space} selected={design} cfg={cfg} onSelect={setSelected} />
       <Temperatures d={design} cfg={cfg} />
       <Chambers d={design} cfg={cfg} />
       <AirflowTable d={design} cfg={cfg} />
