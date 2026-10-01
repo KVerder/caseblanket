@@ -155,12 +155,12 @@ describe('recirculation and deflectors', () => {
 
 describe('flow-shaping optimiser', () => {
   it('keeps a structure only when it beats the uncertainty, and drops walls that do nothing in 3D', async () => {
-    const { COOLERS, GPUS } = await import('../src/model/presets');
+    const { COOLERS } = await import('../src/model/presets');
     const { optimiseShaping, STRUCTURE_MIN_GAIN } = await import('../src/cfd/run');
     const cfg = defaultConfig();
-    cfg.parts.gpu = structuredClone(GPUS.find((g) => g.cooling === 'air')!);
     cfg.parts.cooler = structuredClone(COOLERS.find((c) => c.kind === 'air-tower')!);
-    const d = solve(cfg, { wrapMetrics: false }).designs.find((x) => x.chamber)!;
+    cfg.prefs.loadProfile = 'full';
+    const d = solve(cfg, { wrapMetrics: false }).space.find((x) => x.chamber)!;
     const r = optimiseShaping(d, cfg);
     let margin = r.baselineThermal.worstMargin;
     for (const s of r.steps) {

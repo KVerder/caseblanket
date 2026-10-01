@@ -26,14 +26,16 @@ export const FANS = {
     thickness: 25,
     maxAirflowM3h: 102.1,
     maxPressureMmH2O: 2.34,
+    acoustics: { rpmMax: 2000, rpmMin: 450, dbaMax: 22.6, blades: 9 },
   },
   a12x15: {
     size: 120,
     thickness: 15,
     maxAirflowM3h: 94.2,
     maxPressureMmH2O: 1.53,
+    acoustics: { rpmMax: 1850, rpmMin: 300, dbaMax: 23.9, blades: 9 },
   },
-  a9x14: { size: 92, thickness: 14, maxAirflowM3h: 50.5, maxPressureMmH2O: 2.0 },
+  a9x14: { size: 92, thickness: 14, maxAirflowM3h: 50.5, maxPressureMmH2O: 2.0, acoustics: { rpmMax: 2500, rpmMin: 600, dbaMax: 23.6, blades: 9 } },
   generic120: { size: 120, thickness: 25, maxAirflowM3h: 100, maxPressureMmH2O: 2.5 },
   generic140: { size: 140, thickness: 25, maxAirflowM3h: 140, maxPressureMmH2O: 1.8 },
   psu92: { size: 92, thickness: 25, maxAirflowM3h: 60, maxPressureMmH2O: 2.5 },
@@ -44,9 +46,9 @@ export const FANS = {
 } satisfies Record<string, FanSpec>;
 
 export const FAN_NOTES: Record<string, string> = {
-  a12x25: 'Noctua NF-A12x25 PWM rating (from a search summary of noctua.at, not verified on the page)',
-  a12x15: 'Noctua NF-A12x15 PWM rating (from a search summary, not verified)',
-  a9x14: 'Airflow per Noctua NH-L9a-AM5 search summary; pressure is an estimate',
+  a12x25: 'Noctua NF-A12x25 PWM rating (from a search summary of noctua.at, not verified on the page); speed range, noise and blade count from memory, unverified',
+  a12x15: 'Noctua NF-A12x15 PWM rating (from a search summary, not verified); speed range, noise and blade count from memory, unverified',
+  a9x14: 'Airflow per Noctua NH-L9a-AM5 search summary; pressure, speed range and noise are estimates',
 };
 
 export const SLIM_RAD_FAN: FanSpec = FANS.a12x15;
@@ -445,6 +447,8 @@ export const DEFAULT_PREFS: Preferences = {
   targetRiseC: 12,
   loadProfile: 'gaming',
   chambers: 'auto',
+  noiseMode: 'budget',
+  noiseBudgetDb: 30,
   feetHeight: 8,
   spineThickness: 2,
   finish: '#2b2d31',
@@ -465,6 +469,8 @@ export const DEFAULT_ADVANCED: AdvancedModel = {
   loads: { gaming: { cpu: 0.5, gpu: 0.9 }, full: { cpu: 1, gpu: 1 } },
   limits: { cpu: 95, gpuCore: 83, gpuMem: 95, psuInlet: 40, caseAir: 50 },
   rth: { cpuToCoolant: 0.35, gpuToCoolant: 0.06, cpuToAir: 0.35, gpuToAir: 0.12, gpuMemToAir: 0.6 },
+  pumpDb: 22,
+  psuFanlessShare: 0.4,
 };
 
 export function defaultConfig(): DesignConfig {

@@ -25,6 +25,8 @@ export interface FanSpec {
   maxAirflowM3h: number;
   /** Maximum static pressure in mm H₂O (manufacturer convention). */
   maxPressureMmH2O: number;
+  /** Speed range, noise rating (dB(A) at 1 m, max speed) and blade count; typical values by size when absent. */
+  acoustics?: { rpmMax: number; rpmMin: number; dbaMax: number; blades: number };
 }
 
 export interface RadiatorSpec {
@@ -228,6 +230,10 @@ export interface Preferences {
   ambientC: number;
   /** Let the solver add internal partitions (air chambers) when they help, or keep one chamber. */
   chambers: 'auto' | 'single';
+  /** Fan speeds: as cool as possible within the noise budget, or as quiet as possible with every part under its limit. */
+  noiseMode: 'budget' | 'quiet';
+  /** Noise budget, dB(A) at 1 m (free-field estimate). */
+  noiseBudgetDb: number;
   /** Load the design is rated at: typical gaming or sustained full load. */
   loadProfile: LoadProfileId;
   /** Allowed air temperature rise leaving any heat exchanger. */
@@ -260,6 +266,10 @@ export interface AdvancedModel {
   limits: ComponentLimits;
   /** Thermal resistances from a component to its air or coolant, K/W. */
   rth: ComponentResistances;
+  /** AIO pump noise, dB(A) at 1 m, each (estimate). */
+  pumpDb: number;
+  /** PSU fan stays off below this share of the PSU's rating (semi-passive; estimate). */
+  psuFanlessShare: number;
 }
 
 export interface DesignConfig {

@@ -69,6 +69,10 @@ export function Summary({ d, cfg }: { d: Design; cfg: DesignConfig }) {
           <dd>≈ {ol.weightKg.toFixed(2)} kg</dd>
         </div>
         <div>
+          <dt>Noise</dt>
+          <dd title="Estimate at 1 m, free field">≈ {d.noise[cfg.prefs.loadProfile].noise.spl.toFixed(0)} dB(A)</dd>
+        </div>
+        <div>
           <dt>Tightest part</dt>
           <dd title={`${d.flow.worstComponent}: ${d.flow.worstHeadroomK.toFixed(0)} K below its limit at ${LOAD_LABEL[cfg.prefs.loadProfile]} load`}>
             {Math.round(d.flow.worstMargin * 100)}% left
@@ -364,6 +368,75 @@ export function Chambers({ d, cfg }: { d: Design; cfg: DesignConfig }) {
         ))}
       </ul>
       <p className="muted small">Walls are {PARTITION_THICKNESS} mm printed plates in existing gaps, so they add no volume. Leak areas are estimates.</p>
+    </section>
+  );
+}
+
+/** Fan speeds and the noise they make, source by source, at the selected load. */
+export function Noise({ d, cfg }: { d: Design; cfg: DesignConfig }) {
+  const load = cfg.prefs.loadProfile;
+  const other: LoadProfileId = load === 'gaming' ? 'full' : 'gaming';
+  const n = d.noise[load];
+  const budget = cfg.prefs.noiseMode === 'budget';
+  const fans = n.noise.sources;
+  return (
+    <section className="airflow noise" aria-label="Noise">
+      <div className="section-head">
+        <h3>Noise</h3>
+        <span className="muted small">estimate, 1 m on a desk</span>
+      </div>
+      <p className="noise-big">
+        <b>{n.noise.spl.toFixed(1)}</b> dB(A)
+        <span className="muted small">
+          {' '}
+          at {LOAD_LABEL[load]} load · {d.noise[other].noise.spl.toFixed(1)} dB(A) at {LOAD_LABEL[other]}
+        </span>
+      </p>
+      <p className="small">
+        {budget
+          ? n.feasible
+            ? `Within the ${cfg.prefs.noiseBudgetDb} dB(A) budget.`
+            : `Over the ${cfg.prefs.noiseBudgetDb} dB(A) budget even at the slowest fan speeds.`
+          : n.feasible
+            ? 'As quiet as the fans can go with every part under its limit.'
+            : 'Even full speed leaves a part over its limit.'}{' '}
+        {Number.isFinite(n.quietDb) && budget ? `Quietest with every part under its limit: ${n.quietDb.toFixed(1)} dB(A).` : ''}
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Source</th>
+            <th scope="col" className="num">
+              Speed
+            </th>
+            <th scope="col" className="num">
+              dB(A)
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {fans.map((s) => {
+            const sp = s.id === 'psu' ? d.flow.groups.find((g) => g.id === 'psu')?.speed : n.speeds[s.id];
+            return (
+              <tr key={s.id}>
+                <th scope="row">
+                  <span className="path-name">{s.label}</span>
+                  <span className="path-sub">
+                    {s.bpfHz ? `blade tone ${Math.round(s.bpfHz)} Hz` : ''}
+                    {s.penaltyDb ? ` · +${s.penaltyDb.toFixed(1)} dB from the grille${s.tonal ? ' (tonal)' : ''}` : ''}
+                  </span>
+                </th>
+                <td className="num">{sp !== undefined ? `${Math.round(sp * 100)}%` : '—'}</td>
+                <td className="num">{Number.isFinite(s.lw) && s.lw - 8 > 0 ? (s.lw - 8).toFixed(1) : '< 0'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="muted small">
+        Each row is that source alone at 1 m; they add as powers (two equal sources = +3 dB). Fan ratings are read as sound pressure at 1 m and
+        scaled by the fan laws; grille penalties, vent noise and the pump level are estimates.
+      </p>
     </section>
   );
 }

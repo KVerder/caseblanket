@@ -1706,3 +1706,21 @@ dialog.print .catalog-foot {
   text-underline-offset: 2px;
   cursor: pointer;
 }
+
+.noise .noise-big {
+  margin: 0.25rem 0;
+  font: 400 15px var(--font-body);
+}
+.noise .noise-big b {
+  font: 600 28px var(--font-display);
+}
+.explorer .pt-out {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  opacity: 0.7;
+}
+.explorer .y-toggle {
+  margin: 0.4rem 0;
+  width: fit-content;
+}

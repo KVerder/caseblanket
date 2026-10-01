@@ -53,9 +53,15 @@ export function rankDesigns(designs: Design[], cfg: DesignConfig): Design[] {
   const pool = valid.length ? valid : designs;
   const tBest = Math.min(...pool.map((d) => d.thickness));
   const vBest = Math.min(...pool.map((d) => d.volumeL));
+  const load = cfg.prefs.loadProfile ?? 'gaming';
+  const quiet = cfg.prefs.noiseMode === 'quiet';
+  const splOf = (d: Design) => d.noise?.[load]?.noise.spl ?? 0;
+  const splBest = Math.min(...pool.map(splOf));
   for (const d of designs) {
     d.compactCost = alpha * Math.log(d.thickness / tBest) + (1 - alpha) * Math.log(d.volumeL / vBest);
-    let cost = (1 - s) * d.compactCost + s * (1 - d.flow.score);
+    // Within a noise budget, rank on how cool it runs; in quiet mode, on how quiet it is (10 dB ≈ the thermal score's full range).
+    const comfort = quiet ? (splOf(d) - splBest) / 10 : 1 - d.flow.score;
+    let cost = (1 - s) * d.compactCost + s * comfort;
     if (d.limited) cost += 1;
     if (d.invalid) cost += 10;
     if (d.checks.some((c) => c.text.startsWith('PSU AC inlet'))) cost += 0.01;

@@ -97,7 +97,8 @@ describe('shrinkwrap shell', () => {
     expect(tight.volumeMm3).toBeLessThan(box.volumeMm3);
     expect(smooth.volumeMm3).toBeGreaterThanOrEqual(tight.volumeMm3 * 0.99);
     const m = wrapMetrics(d, cfg, 1);
-    expect(m.thickness).toBeLessThanOrEqual(d.thickness + 2 * 6);
+    // Per side at most: softness (0.5 + 2.5 mm) + 0.45 of a grid cell (≤ 8 mm) − the box's own wall.
+    expect(m.thickness).toBeLessThanOrEqual(d.thickness + 2 * 7);
     console.log(
       `box ${(box.volumeMm3 / 1e6).toFixed(2)} L; tight ${(tight.volumeMm3 / 1e6).toFixed(2)} L; smooth ${(smooth.volumeMm3 / 1e6).toFixed(2)} L ${m.thickness.toFixed(0)} mm; ${ms.toFixed(0)} ms`,
     );

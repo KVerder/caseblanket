@@ -254,6 +254,38 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
         </p>
       </Section>
 
+      <Section title="Noise">
+        <Segmented
+          label="Fan speeds"
+          value={p.noiseMode}
+          options={[
+            { value: 'budget', label: 'Coolest within budget' },
+            { value: 'quiet', label: 'Quietest that stays safe' },
+          ]}
+          onChange={(v) => set('noiseMode', v)}
+        />
+        {p.noiseMode === 'budget' && (
+          <Slider
+            id="noise-budget"
+            label="Noise budget"
+            value={p.noiseBudgetDb}
+            min={18}
+            max={45}
+            step={1}
+            left="Whisper"
+            right="Loud"
+            format={(v) => `${v} dB(A)`}
+            onChange={(v) => set('noiseBudgetDb', v)}
+          />
+        )}
+        <p className="muted small">
+          {p.noiseMode === 'budget'
+            ? 'The solver sets every fan’s speed to keep the tightest part as cool as possible without the case getting louder than this, at 1 m on a desk.'
+            : 'The solver slows every fan as far as it can while every part stays under its limit.'}{' '}
+          Noise is an estimate from fan ratings (free field, 1 m), not a measurement.
+        </p>
+      </Section>
+
       <Section title="Thermal targets">
         <Segmented
           label="Rate the design at"

@@ -54,6 +54,14 @@ export function ModelPanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Des
         </Grid>
       </Section>
 
+      <Section title="Noise sources (estimates)">
+        <Grid cols={2}>
+          <NumberField id="pump-db" label="AIO pump" unit="dB(A)" value={a.pumpDb} min={0} max={45} step={0.5} onChange={(v) => set('pumpDb', v)} hint="Each AIO pump, at 1 m" />
+          <NumberField id="psu-fanless" label="PSU fan off below" unit="%" value={Math.round(a.psuFanlessShare * 100)} min={0} max={100} onChange={(v) => set('psuFanlessShare', v / 100)} hint="Semi-passive PSUs keep their fan off at light load" />
+        </Grid>
+        <p className="muted small">Fans use their rated noise at full speed (or a typical value for their size) and the fan laws: +50·log₁₀ of the speed ratio.</p>
+      </Section>
+
       <Section title="Loss coefficients">
         <Grid cols={3}>
           <NumberField id="k-rad" label="Radiator core" value={a.radLossK} min={1} max={60} step={0.5} onChange={(v) => set('radLossK', v)} hint="ζ at 27 mm core thickness, scaled linearly with thickness" />

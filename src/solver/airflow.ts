@@ -61,6 +61,8 @@ export interface FanGroupInput {
   isRadiator: boolean;
   /** The component this heat path cools. */
   component?: ComponentSpec;
+  /** Fan speed as a share of its maximum (fan laws: airflow ∝ speed, pressure ∝ speed²). Default 1. */
+  speed?: number;
 }
 
 export interface ZoneInput {
@@ -108,6 +110,8 @@ export interface GroupResult {
   adequacy: number;
   coolantRiseC?: number;
   pressurePa: number;
+  /** Fan speed as a share of its maximum. */
+  speed: number;
 }
 
 export interface ZoneResult {
@@ -164,16 +168,17 @@ export function perforatedPlateZeta(openRatio: number): number {
   return (0.707 * Math.pow(1 - f, 0.375) + 1 - f) ** 2 / (f * f);
 }
 
-export function fanCurve(fan: FanSpec, count: number) {
+export function fanCurve(fan: FanSpec, count: number, speed = 1) {
   return {
-    qmax: (fan.maxAirflowM3h / 3600) * count,
-    pmax: fan.maxPressureMmH2O * MMH2O_TO_PA,
+    qmax: (fan.maxAirflowM3h / 3600) * count * speed,
+    pmax: fan.maxPressureMmH2O * MMH2O_TO_PA * speed * speed,
   };
 }
 
 /** Operating airflow for a fan (group) against Σζ losses plus a constant pressure offset p0. */
-export function operatingFlow(fan: FanSpec, count: number, losses: LossTerm[], p0: number): number {
-  const { qmax, pmax } = fanCurve(fan, count);
+export function operatingFlow(fan: FanSpec, count: number, losses: LossTerm[], p0: number, speed = 1): number {
+  if (speed <= 0) return 0;
+  const { qmax, pmax } = fanCurve(fan, count, speed);
   let a = 0;
   for (const l of losses) if (l.area > 0) a += (l.zeta * 0.5 * RHO) / (l.area * l.area);
   const b = pmax / qmax;
@@ -202,7 +207,7 @@ export function solveNetwork(input: NetworkInput): FlowResult {
   const passiveArea = (z: ZoneInput) => z.passiveArea + z.leakArea;
   const passiveZeta = (z: ZoneInput) => (z.passiveArea * z.passiveZeta + z.leakArea * 2.5) / Math.max(1e-9, passiveArea(z));
 
-  const groupFlows = (p: number[]) => groups.map((g) => operatingFlow(g.fan, g.fanCount, g.losses, pz(p, g.sink) - pz(p, g.source)));
+  const groupFlows = (p: number[]) => groups.map((g) => operatingFlow(g.fan, g.fanCount, g.losses, pz(p, g.sink) - pz(p, g.source), g.speed ?? 1));
   /** Net volume inflow into every zone. */
   const residual = (p: number[]) => {
     const r = new Array(K).fill(0);
@@ -302,7 +307,7 @@ export function solveNetwork(input: NetworkInput): FlowResult {
   const groupResults: GroupResult[] = groups.map((g, i) => {
     const inletRise = riseAt(g.source);
     const delta = q[i] > 1e-6 ? g.heatW / (RHO * CP * q[i]) : g.heatW > 0 ? 999 : 0;
-    const { qmax, pmax } = fanCurve(g.fan, g.fanCount);
+    const { qmax, pmax } = fanCurve(g.fan, g.fanCount, g.speed ?? 1);
     return {
       id: g.id,
       label: g.label,
@@ -316,7 +321,8 @@ export function solveNetwork(input: NetworkInput): FlowResult {
       exitRiseC: inletRise + delta,
       adequacy: 2,
       coolantRiseC: g.isRadiator ? inletRise + delta / Math.max(0.05, input.radEffectiveness) : undefined,
-      pressurePa: pmax * (1 - q[i] / qmax),
+      pressurePa: qmax > 0 ? pmax * (1 - q[i] / qmax) : 0,
+      speed: g.speed ?? 1,
     };
   });
 
@@ -400,15 +406,34 @@ export function solveNetwork(input: NetworkInput): FlowResult {
   };
 }
 
+/** Root of a decreasing function on [−500, 500] Pa: bracketed secant (Illinois), bisection fallback. */
 function bisect(f: (x: number) => number) {
   let lo = -500;
   let hi = 500;
-  for (let i = 0; i < 80; i++) {
-    const mid = (lo + hi) / 2;
-    if (f(mid) > 0) lo = mid;
-    else hi = mid;
+  let flo = f(lo);
+  let fhi = f(hi);
+  if (flo <= 0) return lo;
+  if (fhi >= 0) return hi;
+  let side = 0;
+  let x = 0;
+  for (let i = 0; i < 60; i++) {
+    x = (lo * fhi - hi * flo) / (fhi - flo);
+    if (!(x > lo && x < hi)) x = (lo + hi) / 2;
+    const fx = f(x);
+    if (Math.abs(fx) < 1e-12 || hi - lo < 1e-9) return x;
+    if (fx > 0) {
+      lo = x;
+      flo = fx;
+      if (side === -1) fhi /= 2;
+      side = -1;
+    } else {
+      hi = x;
+      fhi = fx;
+      if (side === 1) flo /= 2;
+      side = 1;
+    }
   }
-  return (lo + hi) / 2;
+  return x;
 }
 
 /** Gaussian elimination with partial pivoting; null when singular. */

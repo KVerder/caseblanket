@@ -270,7 +270,7 @@ function closingGrid(design: Design, union: Field, R: number, fineCell: number):
 export function shellGrid(design: Design, cfg: DesignConfig, organic: number, cell: number): Grid {
   const s = Math.min(1, Math.max(0, organic));
   const wall = design.wall;
-  const soft = wall + SOFT_MIN + SOFT_RANGE * s + cell * 0.35;
+  const soft = wall + SOFT_MIN + SOFT_RANGE * s + cell * 0.45;
   const pad = soft + 3 * cell;
   const g = makeGrid([-pad, -pad, -pad], [design.interior[0] + pad, design.interior[1] + pad, design.interior[2] + pad], cell);
   if (!isWrap(cfg)) {

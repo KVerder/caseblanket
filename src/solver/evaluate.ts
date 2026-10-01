@@ -1,5 +1,7 @@
 import { MATERIALS, VENT_STYLES } from '../model/presets';
 import type { DesignConfig, FanSpec, RadiatorSpec, TopologyId , LoadProfileId } from '../model/types';
+import { bpf, fanAcoustics, fanLw, HEMISPHERE_DB, obstructionPenalty, sumDb, ventLw, type NoiseSource } from './acoustics';
+import { coolestWithin, noiseTotal, quietestSafe, type NoiseResult, type SpeedControl } from './fanspeeds';
 import { CASE_LEAK, PARTITION_THICKNESS, chamberLayouts, ventAreaIn, wallShare, type ChamberLayout } from './chambers';
 import { HOSE_MIN_BEND, hosePaths, minBendRadius, pathLength } from './hoses';
 import { perforatedPlateZeta, solveFlow, solveNetwork, type ComponentSpec, type Endpoint, type FanGroupInput, type FlowResult, type LossTerm } from './airflow';
@@ -21,6 +23,16 @@ import {
 import { allowedFaceDirs, boardStack, isTwoLayer, type ItemDef, type ItemKind, type LayerId, type Profile } from './items';
 import { interiorThickness, type PackNode } from './pack';
 import type { WrapMetrics } from './shrinkwrap';
+
+export interface DesignNoise {
+  /** Fan group speeds as a share of each fan's maximum. */
+  speeds: Record<string, number>;
+  noise: NoiseResult;
+  /** Budget mode: the budget can be met (quiet mode: every part can be kept under its limit). */
+  feasible: boolean;
+  /** Quietest noise that keeps every part under its limit, dB(A) at 1 m (Infinity if none; NaN when not computed). */
+  quietDb: number;
+}
 
 /** Partitions must lift the tightest part's margin by more than this share of its budget (model uncertainty, estimate). */
 export const CHAMBER_MIN_GAIN = 0.05;
@@ -88,8 +100,10 @@ export interface Design {
   vents: Vent[];
   spine?: [number, number];
   flow: FlowResult;
-  /** The same design rated at both load profiles (flow is the selected one). */
+  /** The same design rated at both load profiles (flow is the selected one), at the solved fan speeds. */
   thermal: Record<LoadProfileId, FlowResult>;
+  /** Fan speeds and noise at each load. */
+  noise: Record<LoadProfileId, DesignNoise>;
   /** Internal partitions in use (null: one chamber). */
   chamber: ChamberLayout | null;
   /** Best chamber layouts tried, by gain on the tightest part (empty when chambers are off). */
@@ -397,6 +411,10 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     const extrasW = cfg.parts.extras.reduce((a, e) => a + e.heatW, 0);
     const dcLoad = cpuW + gpuW + bp.heatW + extrasW;
     const psuLoss = Math.min(dcLoad, psuSpec.ratedW) * (1 / Math.max(0.5, psuSpec.efficiency) - 1);
+    // Semi-passive PSU fan: off below a share of its rating, then rising to full speed at full load (estimate).
+    const share = dcLoad / Math.max(1, psuSpec.ratedW);
+    const thr = advanced.psuFanlessShare ?? 0.4;
+    const psuSpeed = share <= thr ? 0 : Math.min(1, 0.3 + (0.7 * (share - thr)) / Math.max(0.05, 1 - thr));
     const groups: FanGroupInput[] = [];
     const cpuComp = (air: 'mean' | 'coolant', r: number): ComponentSpec => ({ id: 'cpu', label: 'CPU', limitC: tLimits.cpu, selfRiseK: cpuW * r, air, heatW: cpuW });
 
@@ -489,6 +507,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
         losses,
         isRadiator: false,
         component: { id: 'psu', label: 'PSU intake air', limitC: tLimits.psuInlet, selfRiseK: 0, air: 'inlet', heatW: psuLoss },
+        speed: psuSpeed,
       });
       groupParts.psu = 'psu';
       psu.airflow = faceAtWall && acAtWall ? 'through' : faceAtWall ? 'in' : acAtWall ? 'out' : 'internal';
@@ -552,13 +571,23 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   const effectiveTopology: TopologyId = two && !hasB ? (topology === 'sandwich' ? 'flat' : 'direct') : topology;
   // Enough of the design for the chamber geometry and hose routing, before it is assembled.
   const layoutDesign = { parts, interior, profile, effectiveTopology } as unknown as Design;
-  const solveAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null) => {
-    const net = network(advanced.loads[profileId]);
-    const groups = [...net.groups];
-    for (const p of radParts) {
-      const i = wallRads.indexOf(p);
-      groups.push(radGroup(p, i < 0 ? 'through' : dirs[i], net.radHeat[p.id], net.radComp(p)));
+  // Heat paths depend only on the load and the radiator directions: build each set once.
+  const netCache = new Map<string, { net: ReturnType<typeof network>; groups0: FanGroupInput[] }>();
+  const solveAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null, speeds?: Record<string, number>) => {
+    const key = `${profileId}|${dirs.join(',')}`;
+    let cached = netCache.get(key);
+    if (!cached) {
+      const net = network(advanced.loads[profileId]);
+      const g0 = [...net.groups];
+      for (const p of radParts) {
+        const i = wallRads.indexOf(p);
+        g0.push(radGroup(p, i < 0 ? 'through' : dirs[i], net.radHeat[p.id], net.radComp(p)));
+      }
+      cached = { net, groups0: g0 };
+      netCache.set(key, cached);
     }
+    const { net, groups0 } = cached;
+    const groups = speeds ? groups0.map((g) => (g.id in speeds ? { ...g, speed: speeds[g.id] } : g)) : groups0;
     if (layout) {
       // Each 'case' endpoint becomes the chamber that holds the group's part.
       const zoneOfPart = (id: string) => Math.max(0, layout.chambers.findIndex((c) => c.parts.includes(id)));
@@ -615,9 +644,58 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     if (top && top.gain > CHAMBER_MIN_GAIN) best = { flow: top.flow, dirs: top.dirs, layout: top.layout };
   }
   const otherId: LoadProfileId = loadId === 'gaming' ? 'full' : 'gaming';
-  const thermal = { [loadId]: best!.flow, [otherId]: solveAt(otherId, best!.dirs, best!.layout) } as Record<LoadProfileId, FlowResult>;
   const chamber = best!.layout;
-  const flow = best!.flow;
+
+  // ---- fan speeds and noise, at each load
+  const fanMeta: Record<string, { fan: FanSpec; count: number; gap: number; atWall: boolean; label: string }> = {};
+  for (const p of radParts) fanMeta[p.id] = { fan: p.fan!, count: p.fanCount!, gap: p.faceGap, atWall: p.faceAtWall, label: `${p.label} fans` };
+  if (cooler.kind !== 'aio') fanMeta.cpu = { fan: cooler.fan, count: 1, gap: board.faceGap, atWall: board.faceAtWall && vents.some((v) => v.groupId === 'cpu'), label: 'CPU cooler fan' };
+  if (gpuSpec.cardFan) fanMeta['gpu-card'] = { fan: gpuSpec.cardFanSpec, count: 1, gap: gpu.faceGap, atWall: gpu.faceAtWall && vents.some((v) => v.groupId === 'gpu'), label: 'Graphics card fan' };
+  const psuMeta = { fan: psuSpec.fan, gap: psu.faceGap, atWall: psu.faceAtWall };
+  const controls: SpeedControl[] = Object.entries(fanMeta).map(([id, m]) => {
+    const a = fanAcoustics(m.fan);
+    return { id, min: a.rpmMin / a.rpmMax };
+  });
+  const blocked = 1 - vs.openRatio;
+  const noiseOf = (speeds: Record<string, number>, f: FlowResult): NoiseResult => {
+    const src: NoiseSource[] = [];
+    for (const [id, m] of Object.entries(fanMeta)) {
+      const sp = speeds[id] ?? 1;
+      const pen = m.atWall ? obstructionPenalty(m.fan, m.gap, blocked) : { db: 0, tonal: false };
+      src.push({ id, label: m.label, lw: fanLw(m.fan, m.count, sp) + pen.db, bpfHz: bpf(m.fan, sp), penaltyDb: pen.db, tonal: pen.tonal });
+    }
+    const psuG = f.groups.find((g) => g.id === 'psu');
+    if (psuG && psuG.speed > 0) {
+      const pen = psuMeta.atWall ? obstructionPenalty(psuMeta.fan, psuMeta.gap, blocked) : { db: 0, tonal: false };
+      src.push({ id: 'psu', label: 'PSU fan', lw: fanLw(psuMeta.fan, 1, psuG.speed) + pen.db, bpfHz: bpf(psuMeta.fan, psuG.speed), penaltyDb: pen.db, tonal: pen.tonal });
+    }
+    if (cooler.kind === 'aio') src.push({ id: 'pump-cpu', label: 'CPU AIO pump', lw: advanced.pumpDb + HEMISPHERE_DB });
+    if (gpuSpec.cooling === 'aio') src.push({ id: 'pump-gpu', label: 'GPU AIO pump', lw: advanced.pumpDb + HEMISPHERE_DB });
+    // Air through the vents: each fan group's own vents, and the passive ones.
+    let ventLevels = -Infinity;
+    for (const g of f.groups) {
+      const area = ventAreaFor(g.id === 'gpu-card' ? 'gpu' : g.id) * vs.openRatio;
+      if (area > 0 && g.flow > 0) ventLevels = sumDb([ventLevels, ventLw(area, g.flow)]);
+    }
+    const passiveFlow = f.zones.reduce((sum, z) => sum + Math.abs(z.passiveFlow), 0);
+    if (passiveArea > 0) ventLevels = sumDb([ventLevels, ventLw(passiveArea * MM2 * vs.openRatio, passiveFlow)]);
+    if (Number.isFinite(ventLevels)) src.push({ id: 'vents', label: 'Air through the vents', lw: ventLevels });
+    return noiseTotal(src);
+  };
+  const speedsAt = (profileId: LoadProfileId, withQuiet: boolean) => {
+    const problem = { controls, evaluate: (sp: Record<string, number>) => solveAt(profileId, best!.dirs, chamber, sp), noise: noiseOf };
+    const quiet = withQuiet || prefs.noiseMode === 'quiet' ? quietestSafe(problem) : null;
+    const chosen = prefs.noiseMode === 'quiet' ? quiet! : coolestWithin(problem, prefs.noiseBudgetDb ?? 30);
+    return { ...chosen, quietDb: quiet ? (quiet.feasible ? quiet.noise.spl : Infinity) : NaN };
+  };
+  // The quietest-safe search (the explorer's "noise needed") runs at the selected load only.
+  const acoustic = { [loadId]: speedsAt(loadId, true), [otherId]: speedsAt(otherId, false) } as Record<LoadProfileId, ReturnType<typeof speedsAt>>;
+  const thermal = { [loadId]: acoustic[loadId].flow, [otherId]: acoustic[otherId].flow } as Record<LoadProfileId, FlowResult>;
+  const flow = acoustic[loadId].flow;
+  const noise: Record<LoadProfileId, DesignNoise> = {
+    gaming: { speeds: acoustic.gaming.speeds, noise: acoustic.gaming.noise, feasible: acoustic.gaming.feasible, quietDb: acoustic.gaming.quietDb },
+    full: { speeds: acoustic.full.speeds, noise: acoustic.full.noise, feasible: acoustic.full.feasible, quietDb: acoustic.full.quietDb },
+  };
   for (const p of radParts) {
     const i = wallRads.indexOf(p);
     p.airflow = i < 0 ? 'through' : best!.dirs[i];
@@ -676,7 +754,16 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   const weightKg = (Math.max(0, surface - openArea) * wall * mat.densityGcm3) / 1e6;
 
   const worst = flow.worstAdequacy;
-  const limited = worst < prefs.minAirflowAdequacy;
+  const sel = noise[loadId];
+  if (!sel.feasible)
+    checks.push(
+      prefs.noiseMode === 'quiet'
+        ? { level: 'warn', text: `Even with every fan at full speed, ${flow.worstComponent} is over its limit at ${loadId === 'gaming' ? 'gaming' : 'full'} load.` }
+        : { level: 'warn', text: `The ${prefs.noiseBudgetDb} dB(A) noise budget can't be met: the slowest fan speeds already make ${sel.noise.spl.toFixed(1)} dB(A).` },
+    );
+  const tones = sel.noise.sources.filter((x) => x.tonal);
+  if (tones.length) checks.push({ level: 'info', text: `${tones.map((t) => t.label).join(', ')} sit close to a grille: expect a tone near ${tones.map((t) => Math.round(t.bpfHz ?? 0)).join(' / ')} Hz.` });
+  const limited = worst < prefs.minAirflowAdequacy || !sel.feasible;
   if (limited) {
     checks.push({
       level: 'warn',
@@ -703,9 +790,11 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     spine,
     flow,
     thermal,
+    noise,
     chamber,
     chamberOptions: chamberOptions.slice(0, 6),
-    singleChamberFlow: chamber ? single.flow : undefined,
+    // One chamber at the same fan speeds, for a like-for-like comparison.
+    singleChamberFlow: chamber ? solveAt(loadId, single.dirs, null, acoustic[loadId].speeds) : undefined,
     chamberWeightKg: chamber ? (chamber.plateAreaMm2 * PARTITION_THICKNESS * mat.densityGcm3) / 1e6 : 0,
     groupParts,
     checks,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { COOLERS, GPUS, defaultConfig } from '../src/model/presets';
+import { COOLERS, defaultConfig } from '../src/model/presets';
 import type { DesignConfig } from '../src/model/types';
 import { DEFAULT_PRINT, printPieces } from '../src/print/printable';
 import { chamberLayouts, PARTITION_THICKNESS } from '../src/solver/chambers';
@@ -7,11 +7,14 @@ import { CHAMBER_MIN_GAIN } from '../src/solver/evaluate';
 import { solve } from '../src/solver/solve';
 import type { ShellMesh } from '../src/solver/shrinkwrap';
 
-/** Air-cooled card + tower cooler: the card's heat reaches the CPU cooler and PSU in one chamber. */
+/**
+ * Tower CPU cooler + AIO card at sustained full load: the tower cooler, the card's own fan and
+ * the PSU all breathe case air, where a partition can keep their air apart.
+ */
 function airConfig(): DesignConfig {
   const cfg = defaultConfig();
-  cfg.parts.gpu = structuredClone(GPUS.find((g) => g.cooling === 'air')!);
   cfg.parts.cooler = structuredClone(COOLERS.find((c) => c.kind === 'air-tower')!);
+  cfg.prefs.loadProfile = 'full';
   return cfg;
 }
 
@@ -65,25 +68,26 @@ describe('internal chambers', () => {
     }
   });
 
-  it('adopts a partition when the card heats the CPU cooler, and only past the threshold', () => {
+  it('adopts a partition where case air mixes, and only past the threshold', () => {
     const cfg = airConfig();
-    const designs = solve(cfg, { wrapMetrics: false }).designs;
+    const designs = solve(cfg, { wrapMetrics: false }).space;
     const withWalls = designs.filter((d) => d.chamber);
     expect(withWalls.length).toBeGreaterThan(0);
     for (const d of withWalls) {
+      // The decision is made with every fan at full speed; the result is then shown at the solved speeds.
       expect(d.singleChamberFlow).toBeDefined();
-      expect(d.flow.worstMargin - d.singleChamberFlow!.worstMargin).toBeGreaterThan(CHAMBER_MIN_GAIN);
+      expect(d.chamberOptions[0].gain).toBeGreaterThan(CHAMBER_MIN_GAIN);
       expect(d.chamberWeightKg).toBeGreaterThan(0);
     }
     for (const d of designs.filter((x) => !x.chamber)) for (const o of d.chamberOptions) expect(o.gain).toBeLessThanOrEqual(CHAMBER_MIN_GAIN);
-    const single = solve({ ...cfg, prefs: { ...cfg.prefs, chambers: 'single' } }, { wrapMetrics: false }).designs;
+    const single = solve({ ...cfg, prefs: { ...cfg.prefs, chambers: 'single' } }, { wrapMetrics: false }).space;
     expect(single.every((d) => !d.chamber)).toBe(true);
   });
 
   it('exports partition plates as closed pieces that fit the bed', () => {
     const cfg = airConfig();
     cfg.prefs.organic = 0.4;
-    const d = solve(cfg, { wrapMetrics: false }).designs.find((x) => x.chamber)!;
+    const d = solve(cfg, { wrapMetrics: false }).space.find((x) => x.chamber)!;
     const bed: [number, number, number] = [200, 200, 200];
     const plates = printPieces(d, cfg, { ...DEFAULT_PRINT, bed }).filter((p) => p.name.startsWith('partition'));
     expect(plates.length).toBeGreaterThan(0);
