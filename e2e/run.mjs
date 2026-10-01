@@ -159,6 +159,61 @@ for (const [name, vp, opts] of [
   await ctx.close();
 }
 
+// ---- design-space explorer, phone and desktop
+for (const [name, vp, opts] of [
+  ['explorer-phone', { width: 390, height: 844 }, { touch: true, dpr: 2 }],
+  ['explorer-desktop', { width: 1440, height: 900 }, {}],
+]) {
+  const { ctx, page } = await open(name, vp, opts);
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+  const ex = page.locator('.explorer');
+  await ex.scrollIntoViewIfNeeded();
+  const all = await ex.locator('circle.pt').count();
+  const front = await ex.locator('circle.front-pt').count();
+  check(all > 8 && front >= 1, `${name}: plots the design space (${all} designs, ${front} on the frontier)`);
+  const ring = async () => Number(await ex.locator('circle.sel-ring').getAttribute('cx'));
+  // Pick the point farthest from the current selection.
+  const r0 = await ring();
+  const xs = await ex.locator('circle.pt').evaluateAll((els) => els.map((e) => Number(e.getAttribute('cx'))));
+  const target = xs.reduce((a, b) => (Math.abs(b - r0) > Math.abs(a - r0) ? b : a), xs[0]);
+  const idx = xs.indexOf(target);
+  const dot = ex.locator('circle.pt').nth(idx);
+  // Bring it near the bottom of the screen: on a phone the 3D view and tabs stay pinned over the top half.
+  await dot.evaluate((e) => { e.scrollIntoView({ block: 'end' }); window.scrollBy(0, 80); });
+  await page.waitForTimeout(300);
+  const box = await dot.boundingBox();
+  if (opts.touch) await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+  else await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.waitForTimeout(800);
+  const r1 = await ring();
+  check(Math.abs(r1 - target) < 1, `${name}: ${opts.touch ? 'tapping' : 'clicking'} a point selects that design (ring ${r0.toFixed(0)} → ${r1.toFixed(0)})`);
+  if (!opts.touch) {
+    await page.mouse.move(box.x + box.width / 2 + 2, box.y + box.height / 2);
+    await page.waitForTimeout(200);
+    check((await ex.locator('.viz-tip').count()) === 1, `${name}: hovering a point shows its tooltip`);
+  }
+  const slider = ex.locator('#front-pick');
+  if (await slider.count()) {
+    await slider.fill(String(await slider.getAttribute('max')));
+    await page.waitForTimeout(600);
+    const onFront = await ex.locator('circle.front-pt').evaluateAll((els) => els.map((e) => Number(e.getAttribute('cx'))));
+    check(onFront.some((x) => Math.abs(x - 0) >= 0) && Math.abs((await ring()) - Math.max(...onFront)) < 1, `${name}: the Size ↔ Thermal slider snaps to the coolest end`);
+  }
+  await ex.getByRole('button', { name: 'Show as table' }).click();
+  const rows = await ex.locator('table.sim-table tbody tr').count();
+  check(rows === front, `${name}: table view lists the frontier (${rows} rows)`);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  check(!overflow, `${name}: no horizontal page scroll with the explorer open`);
+  if (!opts.touch) {
+    await ex.getByRole('button', { name: 'Check ends and selection in 3D' }).click();
+    await page.waitForSelector('.explorer path.check-pt', { timeout: 240000 });
+    const diamonds = await ex.locator('path.check-pt').count();
+    check(diamonds >= 1, `${name}: 3D check plots ${diamonds} simulated point(s) next to the model`);
+  }
+  await ex.screenshot({ path: `${out}/${name}.png` });
+  await ctx.close();
+}
+
 await browser.close();
 if (logs.length) console.log('Console errors:\n' + logs.join('\n'));
 check(logs.length === 0, 'no console errors');

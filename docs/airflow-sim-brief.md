@@ -46,3 +46,22 @@ Add a 3D airflow and heat simulation that runs in the browser for the selected d
 - Grid cells of about 10 mm can't resolve fan blades, fin passages or boundary layers. Swirl is imposed, not resolved, and fine vortex structure is partly numerical.
 - Steady-state numbers are good for comparing layouts and shaping options. They aren't a substitute for testing a prototype.
 - The temperature rise comes from the heat released into the air. Component junction temperatures are not modelled.
+
+## Update, iteration 1 (see docs/iteration-1-brief.md)
+
+**Calibration.** The first version under-predicted airflow by about 40 % even in a plain duct: the fans' push and the porous drag were applied before the pressure projection, which diluted them by (1 + coefficient × dt) at the time steps used, roughly 13× for fans and 6× for radiator cores. Both now act inside the projection: every face's velocity is v = W·(v* − Δp/h) + S, with porous drag giving W = 1/(1 + k·|v*|·dt) and each fan face carrying its fan curve as a pressure jump, Δp = Pmax·(1 − v/vmax), solved implicitly (as OpenFOAM's fan baffle). Calibration tests (`tests/cfd-calibration.test.ts`), a 120 mm fan in a duct open to room air at both ends, against the fan-curve model with the same losses:
+
+| Case | 3D sim | Fan-curve model | Difference |
+|---|---|---|---|
+| Open duct | 52.2 CFM | 53.0 CFM | −2 % |
+| Through a 50 %-open perforated panel | 42.1 CFM | 42.3 CFM | −1 % |
+| Through a 27 mm radiator core | 33.0 CFM | 33.2 CFM | 0 % |
+| Radiator case, cells 12 mm → 6 mm | 33.1 → 33.0 CFM | | −0.3 % |
+
+In a full case the radiator's air temperature rise agrees with the fan-curve model within 7 %. This calibration is against the app's own fan-curve model, so it checks the solver's consistency, not reality; iteration 2 adds independent references (an OpenFOAM case export and measurements from a printed prototype).
+
+**Component temperatures.** Simulation results are read as component temperatures by the same rules as the airflow model: the simulated air (or coolant) around each part plus that part's own rise (power × an estimated thermal resistance), against its own limit, at the design's load.
+
+**Structures.** The optimiser tries exhaust deflectors, intake ducts, radiator fan reversals and internal partitions (or removing the design's own), and keeps a change only when it lifts the tightest part's margin by more than 3 % of its budget; walls that make no difference in 3D are dropped. Bell-mouth inlets, diffusers, turning vanes and vortex generators act on features smaller than a grid cell, so they are listed as needing a finer reference simulation and never claimed.
+
+**Recirculation test, recalibrated.** An exhaust beside an intake: the intake air is +8.3 K over room without a deflector, +2.8 K with one (before calibration: +8.0 K and +2.0 K).
