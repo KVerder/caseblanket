@@ -23,6 +23,16 @@ Tests are in `tests/` (`npm test`, 85 tests) and `e2e/run.mjs` (`npm run e2e`, 3
 
   The two 3D solvers agree within 2–5 K, and both run 4–18 K hotter than the 1D model. Not fully like-for-like: the 3D figures are volume means that include stagnant cells, while the 1D figure assumes even through-flow. Airflow agrees better: OpenFOAM vs the 1D model is −30 % for the CPU cooler fan, −7 % PSU, +3 % GPU card fan and −10 % GPU radiator. Recirculation of warm air into the fans is 7–15 %. [inference] The 1D model's main error is its perfectly mixed zones and even flow through each part, not the fan curves. Part temperatures, and the trade-offs built on them, should be read with this offset until a prototype is measured.
 - **The 1D model also ranks designs differently from the 3D sim.** For 9 designs spread across each design space (in-app 3D sim, 12 k cells, 2 s of flow, solved fan speeds), the rank correlation of tightest-part headroom between 1D and 3D is 0.40 for the default parts and −0.08 for a tower cooler with an air-cooled GPU. The two models often disagree on which part is tightest: in 3D the board and case air limit many designs, where 1D names the GPU core or PSU intake. The explorer's thermal axis comes from the 1D model, so **its frontier is not reliable until the 1D model's mixing assumption is fixed, or the frontier is re-scored in 3D.** [inference] The short, coarse 3D runs add noise, but the gaps (10–25 K) are well beyond the ±55 % gain uncertainty, and OpenFOAM agrees with the 3D sim on the default design.
+- **Follow-up after the audit (on request).**
+  - **3D frontier scoring:** the explorer can re-score about 20 designs in 3D: the model's frontier, the best few per size band, and the selection.
+  - **3D runs to steady state:** every 3D run used for scoring or shaping now continues until temperatures settle. The 1.4 s runs had stopped poorly ventilated layouts mid-heat-up: worst margin −112 % at 1.4 s against −159 % settled.
+  - **Two physics terms in the airflow model:**
+    - Stack (buoyant) exchange through each zone's vents and seams. A zone with little forced flow used to blow up; one design read a 613 K case-air rise against 16 K in 3D.
+    - Re-ingestion by internal fans: r = 0.7, fitted to 3D.
+  - **Effect, against settled 3D runs of 44 designs:**
+    - Mean margin error fell from 135 to 24 points.
+    - Rank agreement with 3D stays at 0.95 when the heat leaves through radiators. It stays 0.05–0.48 when a tower cooler or an air-cooled card heats the case air: what matters there is where the cooler sits against the vents, which a zone model can't see. For those parts the explorer says to score in 3D.
+  - **Mounting points:** see the README ("Build-ready mounting").
 - **Leakage cannot be identified from prototype measurements on the default design.** The fit reports it as not identifiable instead of inventing a value.
 
 ## 0. Audit of iteration 1
