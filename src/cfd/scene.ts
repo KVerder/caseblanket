@@ -39,6 +39,15 @@ export function upAxis(cfg: DesignConfig) {
   return cfg.prefs.orientation === 'tower' ? { axis: 1, sign: 1 } : { axis: 2, sign: 1 };
 }
 
+/** The scene's geometry in solver millimetres (what the grid was built from). */
+export interface SceneGeometry {
+  solids: Box[];
+  porous: { box: Box; along: number[]; zeta: number; thickness: number; label: string }[];
+  heat: { id: string; label: string; box: Box; watts: number }[];
+  fans: { slab: Box; center: Vec3; axis: number; sign: number; radius: number; group: string; spec: FanSpec; count: number }[];
+  partitions?: Partition[];
+}
+
 /**
  * Fan disk forcing from a fan's rated curve: free-air axial speed over the disk area, and the
  * acceleration at stall that builds the fan's maximum static pressure across `layers` cells.
@@ -103,8 +112,18 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
       for (let a = 0; a < 3; a++) beta[a][c] = Math.max(beta[a][c], along.includes(a) ? low : high);
     }
   };
-  const setSolid = (cells: number[]) => {
-    for (const c of cells) cellType[c] = CELL_SOLID;
+
+  // Geometry in solver millimetres, for exporting the same scene to other solvers.
+  const geom: SceneGeometry = { solids: [], porous: [], heat: [], fans: [] };
+  const solidBox = (b: Box) => {
+    geom.solids.push(b);
+    for (const c of cellsIn(b)) cellType[c] = CELL_SOLID;
+  };
+  const porousBox = (b: Box, along: number[], zeta: number, thickness: number, label: string) => {
+    geom.porous.push({ box: b, along, zeta, thickness, label });
+    const cells = cellsIn(b);
+    setPorous(cells, along, betaFor(zeta, thickness), HIGH);
+    return cells;
   };
   /** Quadratic loss coefficient per mm of travel: ζ spread over the block thickness. */
   const betaFor = (zeta: number, thickness: number) => porousBeta(zeta, Math.max(1, Math.round(thickness / h)), h);
@@ -187,6 +206,7 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
     const speed = (flow * 1e9) / count / area;
     const { vmax, a0 } = fanForcing(spec, area, layers, h);
     fans.push({ cells: Int32Array.from(usable), axis: ax, sign, speed, vmax, a0, center: toGrid(centreW), swirl: SWIRL, group, layers, pmaxPa: spec.maxPressureMmH2O * MMH2O_TO_PA });
+    geom.fans.push({ slab, center: centreW, axis: ax, sign, radius, group, spec, count });
     return usable;
   };
   /** A fan disk in a part's local frame: centre (c1, c2) on the e3 slab [z0, z1], blowing along ±e3. */
@@ -212,18 +232,17 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
     if (part.kind === 'board') {
       const o: Vec3 = [part.body.min[0], part.body.min[1] + bs.pcbDv, part.body.min[2]];
       const box = (lo: Vec3, hi: Vec3): Box => ({ min: [o[0] + lo[0], o[1] + lo[1], o[2] + lo[2]], max: [o[0] + hi[0], o[1] + hi[1], o[2] + hi[2]] });
-      setSolid(cellsIn(box([0, 0, bp.underside], [bp.depth, bp.edge, bs.surface])));
-      setSolid(cellsIn(box([0, Math.max(0, bp.edge - 160), bs.surface], [24, bp.edge - 4, bs.surface + Math.min(bp.componentHeight, 40)])));
+      solidBox(box([0, 0, bp.underside], [bp.depth, bp.edge, bs.surface]));
+      solidBox(box([0, Math.max(0, bp.edge - 160), bs.surface], [24, bp.edge - 4, bs.surface + Math.min(bp.componentHeight, 40)]));
       const sx = bp.socketU;
       const sy = bp.socketV;
       const cz = bs.surface + bp.socketStack;
       boardHeatCells = cellsIn(box([0, 0, bs.surface], [bp.depth, bp.edge, bs.surface + Math.min(15, bp.componentHeight)])).filter((c) => cellType[c] !== CELL_SOLID);
       if (cooler.kind === 'aio') {
-        setSolid(cellsIn(box([sx - 30, sy - 30, cz], [sx + 30, sy + 30, cz + cooler.height])));
+        solidBox(box([sx - 30, sy - 30, cz], [sx + 30, sy + 30, cz + cooler.height]));
       } else if (cooler.kind === 'air-downdraft') {
         const finTop = cz + cooler.height - cooler.fan.thickness;
-        const fins = cellsIn(box([sx - cooler.depth / 2, sy - cooler.width / 2, cz], [sx + cooler.depth / 2, sy + cooler.width / 2, finTop]));
-        setPorous(fins, [2], betaFor(cfg.advanced.finStackLossK, finTop - cz), HIGH);
+        const fins = porousBox(box([sx - cooler.depth / 2, sy - cooler.width / 2, cz], [sx + cooler.depth / 2, sy + cooler.width / 2, finTop]), [2], cfg.advanced.finStackLossK, finTop - cz, 'CPU fins');
         heat.push({ id: 'cpu', label: 'CPU cooler', cells: Int32Array.from(fins.filter((c) => cellType[c] !== CELL_SOLID)), watts: groupFlow('cpu')?.heatW ?? cooler.cpuPowerW });
         // Fan on top, blowing down through the fins onto the board (board frame = world axes).
         const r = Math.min(cooler.fan.size, cooler.width, cooler.depth) / 2;
@@ -240,16 +259,14 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
           cooler.fan,
         );
       } else {
-        const fins = cellsIn(box([sx - cooler.depth / 2, sy - cooler.width / 2, cz], [sx + cooler.depth / 2, sy + cooler.width / 2, cz + cooler.height]));
-        setPorous(fins, [0], betaFor(cfg.advanced.finStackLossK, cooler.depth), HIGH);
+        const fins = porousBox(box([sx - cooler.depth / 2, sy - cooler.width / 2, cz], [sx + cooler.depth / 2, sy + cooler.width / 2, cz + cooler.height]), [0], cfg.advanced.finStackLossK, cooler.depth, 'CPU fins');
         heat.push({ id: 'cpu', label: 'CPU cooler', cells: Int32Array.from(fins.filter((c) => cellType[c] !== CELL_SOLID)), watts: groupFlow('cpu')?.heatW ?? cooler.cpuPowerW });
       }
     } else if (part.kind === 'gpu') {
       const [L, H, T] = part.size;
-      const body = cellsIn(part.body);
       const g = groupFlow('gpu-card');
       if (gpuSpec.cardFan) {
-        setPorous(body, [axisWorld(part, 0), axisWorld(part, 2)], betaFor(3, L / 2), HIGH);
+        const body = porousBox(part.body, [axisWorld(part, 0), axisWorld(part, 2)], 3, L / 2, 'GPU shroud');
         heat.push({ id: 'gpu-card', label: g?.label ?? 'GPU card', cells: Int32Array.from(body.filter((c) => cellType[c] !== CELL_SOLID)), watts: g?.heatW ?? 0 });
         if (gpuSpec.cooling === 'aio') addFan(part, L * 0.82, H * 0.5, Math.min(80, H - 20) / 2, T - Math.max(15, h), T, -1, 'gpu-card', gpuSpec.cardFanSpec);
         else {
@@ -258,12 +275,11 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
           for (let i = 0; i < nF; i++) addFan(part, 10 + ((L - 20) / nF) * (i + 0.5), H / 2, size / 2, T - Math.max(13, h), T, -1, 'gpu-card', { ...gpuSpec.cardFanSpec, maxAirflowM3h: gpuSpec.cardFanSpec.maxAirflowM3h / nF }, nF);
         }
       } else {
-        setSolid(body);
+        solidBox(part.body);
       }
     } else if (part.kind === 'psu') {
       const [L, W, H] = part.size;
-      const body = cellsIn(part.body);
-      setPorous(body, [axisWorld(part, 0), axisWorld(part, 2)], betaFor(cfg.advanced.psuLossK, L), HIGH);
+      const body = porousBox(part.body, [axisWorld(part, 0), axisWorld(part, 2)], cfg.advanced.psuLossK, L, 'PSU');
       const g = groupFlow('psu');
       heat.push({ id: 'psu', label: 'Power supply', cells: Int32Array.from(body.filter((c) => cellType[c] !== CELL_SOLID)), watts: g?.heatW ?? 0 });
       if (cfg.parts.psu.fanOn === 'face') {
@@ -281,10 +297,9 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
       const rad = part.radiator!;
       const fan = part.fan!;
       const [len, wid] = part.size;
-      const core = cellsIn(local(part, [16, 0, 0], [len - 16, wid, rad.coreThickness]));
-      setPorous(core, [axisWorld(part, 2)], betaFor(cfg.advanced.radLossK * (rad.coreThickness / 27), rad.coreThickness), HIGH);
-      setSolid(cellsIn(local(part, [0, 0, 0], [16, wid, rad.coreThickness])));
-      setSolid(cellsIn(local(part, [len - 16, 0, 0], [len, wid, rad.coreThickness])));
+      const core = porousBox(local(part, [16, 0, 0], [len - 16, wid, rad.coreThickness]), [axisWorld(part, 2)], cfg.advanced.radLossK * (rad.coreThickness / 27), rad.coreThickness, `${part.label} core`);
+      solidBox(local(part, [0, 0, 0], [16, wid, rad.coreThickness]));
+      solidBox(local(part, [len - 16, 0, 0], [len, wid, rad.coreThickness]));
       const g = groupFlow(part.id);
       heat.push({ id: part.id, label: g?.label ?? part.label, cells: Int32Array.from(core.filter((c) => cellType[c] !== CELL_SOLID)), watts: g?.heatW ?? 0 });
       // +e3 points at the vented wall: 'out'/'through' blow toward it, 'in' away from it.
@@ -297,7 +312,7 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
       // One frame across the whole fan row.
       shroud(local(part, [0, 0, rad.coreThickness], [len, wid, fanTop]), disks);
     } else {
-      setSolid(cellsIn(part.body));
+      solidBox(part.body);
     }
 
     // Duct: seal the gap between the part's fan face and its vented wall with four side plates.
@@ -356,7 +371,24 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
     louvres.push({ cells: Int32Array.from(cells), dir: louvreDirection(v.wall, l.toward), normal: dirVec(v.wall) as [number, number, number] });
   }
 
+  // Heat sources as boxes (the bounding box of their cells).
+  for (const src of heat) {
+    if (!src.cells.length || src.watts <= 0) continue;
+    const lo: Vec3 = [Infinity, Infinity, Infinity];
+    const hi: Vec3 = [-Infinity, -Infinity, -Infinity];
+    for (const c of src.cells) {
+      const p = centre(c);
+      for (let a = 0; a < 3; a++) {
+        lo[a] = Math.min(lo[a], p[a] - h / 2);
+        hi[a] = Math.max(hi[a], p[a] + h / 2);
+      }
+    }
+    geom.heat.push({ id: src.id, label: src.label, box: { min: lo, max: hi }, watts: src.watts });
+  }
+  geom.partitions = cuts;
+
   return {
+    geometry: geom,
     n,
     h,
     origin,

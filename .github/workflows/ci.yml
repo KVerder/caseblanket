@@ -28,3 +28,30 @@ jobs:
         with:
           name: e2e-screenshots
           path: e2e/out
+
+  # Optional: mesh and run the exported OpenFOAM case in the official container (does not block CI).
+  openfoam:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Export the default design as an OpenFOAM case
+        run: OPENFOAM_OUT=$PWD/ofcase OPENFOAM_ITERATIONS=50 OPENFOAM_CELL_MM=12 npx vitest run tests/openfoam.test.ts
+      - name: Mesh and run 50 iterations (openfoam.com v2312)
+        run: |
+          docker run --rm --user root --entrypoint /bin/bash -v "$PWD/ofcase:/case" -w /case opencfd/openfoam-default:2312 \
+            -c 'source /usr/lib/openfoam/openfoam2312/etc/bashrc; chmod +x Allrun; ./Allrun; tail -n 30 log.*'
+      - name: Check the run finished
+        run: |
+          grep -q "Mesh OK" ofcase/log.checkMesh
+          grep -q "^End" ofcase/log.buoyantSimpleFoam
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: openfoam-case
+          path: ofcase

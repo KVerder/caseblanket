@@ -472,13 +472,18 @@ export interface FlowInput {
 
 /** One-zone case: every 'case' endpoint is the same well-mixed air. */
 export function solveFlow(input: FlowInput): FlowResult {
+  return solveNetwork(flowNetwork(input));
+}
+
+/** The one-zone input as a zone network (to keep, re-solve or adjust). */
+export function flowNetwork(input: FlowInput): NetworkInput {
   const lim = input.ambientC + input.targetRiseC;
   const comps = input.caseComponents ?? [{ id: 'case', label: 'Case interior', limitC: lim, selfRiseK: 0, air: 'zone' as const, heatW: Math.max(30, input.internalHeatW) }];
   // Groups without a component of their own are rated on their exit air against the same target.
   const groups = input.groups.map((g) =>
     g.component || g.heatW <= 0 ? g : { ...g, component: { id: g.id, label: g.label, limitC: lim, selfRiseK: 0, air: 'exit' as const, heatW: g.heatW } },
   );
-  return solveNetwork({
+  return {
     zones: [
       { id: 'case', label: 'Case', heatW: input.internalHeatW, passiveArea: input.passiveArea, passiveZeta: input.passiveZeta, leakArea: 0.001 + (input.extraLeakArea ?? 0), components: comps },
     ],
@@ -486,5 +491,5 @@ export function solveFlow(input: FlowInput): FlowResult {
     groups,
     ambientC: input.ambientC,
     radEffectiveness: input.radEffectiveness,
-  });
+  };
 }

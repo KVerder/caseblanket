@@ -4,7 +4,7 @@ import { bpf, fanAcoustics, fanLw, HEMISPHERE_DB, obstructionPenalty, sumDb, ven
 import { coolestWithin, noiseTotal, quietestSafe, type NoiseResult, type SpeedControl } from './fanspeeds';
 import { CASE_LEAK, PARTITION_THICKNESS, chamberLayouts, ventAreaIn, wallShare, type ChamberLayout } from './chambers';
 import { HOSE_MIN_BEND, hosePaths, minBendRadius, pathLength } from './hoses';
-import { perforatedPlateZeta, solveFlow, solveNetwork, type ComponentSpec, type Endpoint, type FanGroupInput, type FlowResult, type LossTerm } from './airflow';
+import { flowNetwork, perforatedPlateZeta, solveNetwork, type NetworkInput, type ComponentSpec, type Endpoint, type FanGroupInput, type FlowResult, type LossTerm } from './airflow';
 import {
   axisOf,
   localToWorld,
@@ -23,6 +23,14 @@ import {
 import { allowedFaceDirs, boardStack, isTwoLayer, type ItemDef, type ItemKind, type LayerId, type Profile } from './items';
 import { interiorThickness, type PackNode } from './pack';
 import type { WrapMetrics } from './shrinkwrap';
+
+export interface DesignRecipe {
+  net: NetworkInput;
+  /** Speed-controlled fan groups: rating, max speed, slowest share, grille penalty. */
+  fans: { id: string; label: string; fan: FanSpec; count: number; rpmMax: number; min: number; penaltyDb: number }[];
+  /** Sources that don't follow the fan speeds (pumps, PSU fan), sound power dB(A). */
+  fixedLw: number[];
+}
 
 export interface DesignNoise {
   /** Fan group speeds as a share of each fan's maximum. */
@@ -104,6 +112,8 @@ export interface Design {
   thermal: Record<LoadProfileId, FlowResult>;
   /** Fan speeds and noise at each load. */
   noise: Record<LoadProfileId, DesignNoise>;
+  /** The solved airflow network and noise sources at the selected load, for re-solving (calibration). */
+  recipe: DesignRecipe;
   /** Internal partitions in use (null: one chamber). */
   chamber: ChamberLayout | null;
   /** Best chamber layouts tried, by gain on the tightest part (empty when chambers are off). */
@@ -575,7 +585,8 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   const layoutDesign = { parts, interior, profile, effectiveTopology } as unknown as Design;
   // Heat paths depend only on the load and the radiator directions: build each set once.
   const netCache = new Map<string, { net: ReturnType<typeof network>; groups0: FanGroupInput[] }>();
-  const solveAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null, speeds?: Record<string, number>) => {
+  /** The airflow network at a load, radiator directions, chamber layout and fan speeds. */
+  const networkAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null, speeds?: Record<string, number>): NetworkInput => {
     const key = `${profileId}|${dirs.join(',')}`;
     let cached = netCache.get(key);
     if (!cached) {
@@ -595,7 +606,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       const zoneOfPart = (id: string) => Math.max(0, layout.chambers.findIndex((c) => c.parts.includes(id)));
       const partOfGroup = (id: string) => ({ cpu: 'board', 'gpu-card': 'gpu' })[id] ?? id;
       const mapEnd = (e: Endpoint, gid: string): Endpoint => (e === 'case' ? zoneOfPart(partOfGroup(gid)) : e);
-      return solveNetwork({
+      return {
         zones: layout.chambers.map((c, k) => ({
           id: c.id,
           label: c.label,
@@ -609,9 +620,9 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
         groups: groups.map((g) => ({ ...g, source: mapEnd(g.source, g.id), sink: mapEnd(g.sink, g.id) })),
         ambientC: prefs.ambientC,
         radEffectiveness: advanced.radEffectiveness,
-      });
+      };
     }
-    return solveFlow({
+    return flowNetwork({
       groups,
       internalHeatW: net.internalHeat,
       passiveArea: passiveArea * MM2,
@@ -623,6 +634,8 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       extraLeakArea: jointLeak,
     });
   };
+  const solveAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null, speeds?: Record<string, number>) =>
+    solveNetwork(networkAt(profileId, dirs, layout, speeds));
   const loadId: LoadProfileId = prefs.loadProfile ?? 'gaming';
   let best: { flow: FlowResult; dirs: ('in' | 'out')[]; layout: ChamberLayout | null } | null = null;
   for (const c of combos) {
@@ -794,6 +807,14 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     flow,
     thermal,
     noise,
+    recipe: {
+      net: networkAt(loadId, best!.dirs, chamber, acoustic[loadId].speeds),
+      fans: Object.entries(fanMeta).map(([id, m]) => {
+        const a = fanAcoustics(m.fan);
+        return { id, label: m.label, fan: m.fan, count: m.count, rpmMax: a.rpmMax, min: a.rpmMin / a.rpmMax, penaltyDb: m.atWall ? obstructionPenalty(m.fan, m.gap, blocked).db : 0 };
+      }),
+      fixedLw: acoustic[loadId].noise.sources.filter((x) => x.id.startsWith('pump') || x.id === 'psu').map((x) => x.lw),
+    },
     chamber,
     chamberOptions: chamberOptions.slice(0, 6),
     // One chamber at the same fan speeds, for a like-for-like comparison.

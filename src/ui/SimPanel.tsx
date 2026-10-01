@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { UNRESOLVED_STRUCTURES, type ShapingResult } from '../cfd/run';
+import { gainWithUncertainty } from '../solver/uncertainty';
 import type { Shaping } from '../cfd/scene';
 import type { FlowStats } from '../cfd/solver';
 import type { DesignConfig } from '../model/types';
@@ -163,7 +164,7 @@ export function SimPanel({ design, cfg, viewer }: { design: Design; cfg: DesignC
             Tightest part ({opt.result.bestThermal.worstComponent}): <b>{pct(opt.result.baselineThermal.worstMargin)}</b> →{' '}
             <b>{pct(opt.result.bestThermal.worstMargin)}</b> of its budget left
             {opt.result.bestThermal.worstMargin > opt.result.baselineThermal.worstMargin + opt.result.threshold
-              ? ` (${(opt.result.bestThermal.worstHeadroomK - opt.result.baselineThermal.worstHeadroomK).toFixed(1)} K more margin)`
+              ? ` (${gainWithUncertainty(opt.result.bestThermal.worstHeadroomK - opt.result.baselineThermal.worstHeadroomK)} of margin; the ± is how much a finer grid changes such gains)`
               : opt.result.shaping.noChambers
                 ? ' — the internal walls make no difference here in 3D, so they were dropped.'
                 : ` — nothing tried beat the design by more than ${pct(opt.result.threshold)} of the budget (the simulation's uncertainty).`}

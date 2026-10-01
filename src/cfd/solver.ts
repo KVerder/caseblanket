@@ -67,6 +67,8 @@ export interface Scene {
   up: { axis: number; sign: number };
   /** Cells inside the case (for the "case air" number). */
   interior: Int32Array;
+  /** What the grid was built from, in solver millimetres (scenes from buildScene). */
+  geometry?: import('./scene').SceneGeometry;
 }
 
 export interface SourceStats {

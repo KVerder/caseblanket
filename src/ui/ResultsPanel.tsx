@@ -3,6 +3,7 @@ import type { DesignConfig, LoadProfileId } from '../model/types';
 import { M3S_TO_CFM } from '../solver/airflow';
 import { CHAMBER_MIN_GAIN, TOPOLOGY_LABELS, type Design } from '../solver/evaluate';
 import { PARTITION_THICKNESS } from '../solver/chambers';
+import { gainWithUncertainty } from '../solver/uncertainty';
 import type { SolveResult } from '../solver/solve';
 
 const mm = (v: number) => Math.round(v).toString();
@@ -309,7 +310,7 @@ export function Chambers({ d, cfg }: { d: Design; cfg: DesignConfig }) {
         <h3>Internal chambers</h3>
         <p className="muted small">
           {opt
-            ? `One chamber. The best partition that fits (${opt.layout.chambers.map((c) => c.label.replace(' chamber', '')).join(' | ')}) changes the tightest part by ${opt.gainK >= 0 ? '+' : ''}${opt.gainK.toFixed(1)} K, ${(opt.gain * 100).toFixed(1)} % of its budget — not more than the model's ±${CHAMBER_MIN_GAIN * 100} %.`
+            ? `One chamber. The best partition that fits (${opt.layout.chambers.map((c) => c.label.replace(' chamber', '')).join(' | ')}) changes the tightest part by ${gainWithUncertainty(opt.gainK)}, ${(opt.gain * 100).toFixed(1)} % of its budget — not more than the model's ±${CHAMBER_MIN_GAIN * 100} %.`
             : 'One chamber. No partition fits between these parts without cutting a part or an air gap.'}
         </p>
       </section>

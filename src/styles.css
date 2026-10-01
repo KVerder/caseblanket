@@ -1735,3 +1735,31 @@ dialog.print .catalog-foot {
 .manifest {
   margin-top: 0.5rem;
 }
+
+.fidelity fieldset.measure {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem 0.75rem;
+}
+.fidelity fieldset.measure input {
+  width: 100%;
+  min-height: 36px;
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.file-btn {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+}
+.file-btn input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}

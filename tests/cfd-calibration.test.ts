@@ -98,3 +98,31 @@ describe('3D simulation calibration against the fan-curve model', () => {
     expect(Math.abs(fine / coarse - 1)).toBeLessThan(0.1);
   });
 });
+
+/** Roache's grid convergence index from three solutions (fine f1, medium f2, coarse f3). */
+export function gci(f1: number, f2: number, f3: number, h1: number, h2: number, h3: number) {
+  const r21 = h2 / h1;
+  const r32 = h3 / h2;
+  const e21 = f2 - f1;
+  const e32 = f3 - f2;
+  const s = Math.sign(e32 / e21);
+  let p = 1;
+  for (let i = 0; i < 50; i++) {
+    const q = Math.log((r21 ** p - s) / (r32 ** p - s));
+    p = Math.abs(Math.log(Math.abs(e32 / e21)) + q) / Math.log(r21);
+  }
+  const gciFine = (1.25 * Math.abs(e21 / f1)) / (r21 ** p - 1);
+  return { p, gciFine, monotone: e21 * e32 > 0 };
+}
+
+describe('grid convergence (GCI, three levels)', () => {
+  it('has a radiator-duct airflow converged to within 5 % on the app grid', () => {
+    const hs = [6, 8.5, 12];
+    const f = hs.map((h) => run(h, { zeta: 13, thickness: 27 }).sim3d);
+    const g = gci(f[0], f[1], f[2], hs[0], hs[1], hs[2]);
+    console.log(`radiator duct: ${f.map((x) => (x * 2118.88).toFixed(2)).join(' / ')} CFM at ${hs.join(' / ')} mm; p = ${g.p.toFixed(2)}, GCI = ${(g.gciFine * 100).toFixed(2)} %, ${g.monotone ? 'monotone' : 'oscillating'}`);
+    // Oscillating convergence: the spread itself bounds the error.
+    const bound = g.monotone ? g.gciFine : (Math.max(...f) - Math.min(...f)) / f[0];
+    expect(bound).toBeLessThan(0.05);
+  }, 300000);
+});
