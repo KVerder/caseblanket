@@ -169,6 +169,18 @@ export function ViewerPanel(props: {
           <label htmlFor="v-labels" className="check">
             <input id="v-labels" type="checkbox" checked={opts.showLabels} onChange={(e) => set({ showLabels: e.target.checked })} /> Part names
           </label>
+          <label htmlFor="v-flow" className="check">
+            <input id="v-flow" type="checkbox" checked={opts.showFlow} onChange={(e) => set({ showFlow: e.target.checked })} /> Simulated airflow
+          </label>
+          <label htmlFor="v-slice-on" className="check">
+            <input id="v-slice-on" type="checkbox" checked={opts.slice} onChange={(e) => set({ slice: e.target.checked })} /> Temperature slice
+          </label>
+          {opts.slice && (
+            <label htmlFor="v-slice">
+              <span>Slice at</span>
+              <input id="v-slice" type="range" min={0} max={1} step={0.02} value={opts.sliceAt} onChange={(e) => set({ sliceAt: Number(e.target.value) })} />
+            </label>
+          )}
           <label htmlFor="v-clear" className="check">
             <input id="v-clear" type="checkbox" checked={opts.showClearances} onChange={(e) => set({ showClearances: e.target.checked })} /> Clearance boxes
           </label>

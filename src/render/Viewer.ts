@@ -8,6 +8,9 @@ import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, localToWorld, signOf, wallAxes, type Vec3 } from '../solver/geometry';
 import { boardStack } from '../solver/items';
 import type { ShellMesh } from '../solver/shrinkwrap';
+import type { SimFrame } from '../cfd/run';
+import type { Shaping } from '../cfd/scene';
+import { FlowLayer } from './flowLayer';
 import { WorldMap } from './mapping';
 import {
   buildBoard,
@@ -30,6 +33,10 @@ export interface ViewOptions {
   showClearances: boolean;
   showLabels: boolean;
   explode: number;
+  /** Simulated airflow particles (once a simulation has run). */
+  showFlow: boolean;
+  slice: boolean;
+  sliceAt: number;
 }
 
 export type ViewPreset = 'iso' | 'front' | 'top' | 'side' | 'back';
@@ -41,6 +48,9 @@ export const DEFAULT_VIEW: ViewOptions = {
   showClearances: false,
   showLabels: false,
   explode: 0,
+  showFlow: true,
+  slice: false,
+  sliceAt: 0.5,
 };
 
 const VIEW_DIRS: Record<ViewPreset, THREE.Vector3> = {
@@ -106,7 +116,10 @@ export class CaseViewer {
   doubleTapWindow = 350;
   private anim: { from: THREE.Vector3; to: THREE.Vector3; fromT: THREE.Vector3; toT: THREE.Vector3; t0: number } | null = null;
   private design: Design | null = null;
+  readonly flow = new FlowLayer();
+  private lastFrameTime = 0;
   private map: WorldMap | null = null;
+  private cfg: DesignConfig | null = null;
   private hemi!: THREE.HemisphereLight;
   private key!: THREE.DirectionalLight;
   private edgeMat = new THREE.LineBasicMaterial({ color: '#8b93a1', transparent: true, opacity: 0.5 });
@@ -192,7 +205,7 @@ export class CaseViewer {
     this.ground.rotation.x = -Math.PI / 2;
     this.scene.add(this.ground);
 
-    this.root.add(this.partsGroup, this.ghostGroup, this.shell, this.airGroup, this.dimGroup, this.labelGroup);
+    this.root.add(this.partsGroup, this.ghostGroup, this.shell, this.airGroup, this.dimGroup, this.labelGroup, this.flow.group, this.flow.shapingGroup);
     this.scene.add(this.root);
 
     this.renderer.domElement.addEventListener('pointerup', this.onPointerUp);
@@ -239,6 +252,13 @@ export class CaseViewer {
       this.needsRender = true;
     }
     this.controls.update();
+    const now = performance.now();
+    const dt = this.lastFrameTime ? (now - this.lastFrameTime) / 1000 : 0;
+    this.lastFrameTime = now;
+    if (this.flow.active) {
+      this.flow.update(dt);
+      this.needsRender = true;
+    }
     if (!this.needsRender) return;
     this.needsRender = false;
     this.renderer.render(this.scene, this.camera);
@@ -310,6 +330,8 @@ export class CaseViewer {
     this.dimGroup.visible = this.opts.showDims;
     this.ghostGroup.visible = this.opts.showClearances;
     this.labelGroup.visible = this.opts.showLabels;
+    this.flow.setVisible(this.opts.showFlow);
+    this.flow.setSlice(this.opts.slice, this.opts.sliceAt);
     this.applyExplode();
     this.needsRender = true;
   }
@@ -344,6 +366,8 @@ export class CaseViewer {
 
   setDesign(design: Design, cfg: DesignConfig, fit: boolean, organicPending = false) {
     this.design = design;
+    this.cfg = cfg;
+    this.flow.clear();
     for (const g of [this.shell, this.partsGroup, this.airGroup, this.dimGroup, this.ghostGroup, this.labelGroup]) this.clear(g);
     this.partHomes = [];
     const map = new WorldMap(cfg.prefs.orientation, design.interior);
@@ -593,6 +617,30 @@ export class CaseViewer {
     seg(new THREE.Vector3(-hx, y0, hz + off), new THREE.Vector3(hx, y0, hz + off), new THREE.Vector3(0, 6, 0), fmt(ext.x), 'dim-w');
     seg(new THREE.Vector3(hx + off, -hy - feetH, hz + off), new THREE.Vector3(hx + off, hy, hz + off), new THREE.Vector3(6, 0, 0), fmt(ext.y + feetH), 'dim-h');
     seg(new THREE.Vector3(hx + off, y0, -hz), new THREE.Vector3(hx + off, y0, hz), new THREE.Vector3(0, 6, 0), fmt(ext.z), 'dim-d');
+  }
+
+  /** Airflow simulation: show a new frame of the flow field. */
+  setFlowFrame(f: SimFrame) {
+    if (!this.map) return;
+    this.flow.setFrame(f, this.map);
+    this.needsRender = true;
+  }
+
+  setFlowVisible(v: boolean) {
+    this.flow.setVisible(v);
+    this.needsRender = true;
+  }
+
+  setSlice(on: boolean, frac?: number) {
+    this.flow.setSlice(on, frac);
+    this.needsRender = true;
+  }
+
+  /** Draw (or remove) louvres and ducts chosen by the airflow optimiser. */
+  setShaping(shaping: Shaping | null) {
+    if (!this.design || !this.map || !this.cfg) return;
+    this.flow.setShaping(this.design, this.cfg, shaping, this.map);
+    this.needsRender = true;
   }
 
   /** PNG snapshot of the current view. */

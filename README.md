@@ -10,6 +10,9 @@ Design a PC case cut to your exact parts. Pick a motherboard, CPU cooler, PSU an
 
 - **Parts in, case out.** Built-in library (form-factor standards plus a handful of AIO GPUs and coolers), a search of an online parts catalogue, an optional Claude-assisted spec lookup, or your own numbers. Every part shows where its numbers came from.
 - **Straight box to organic shrinkwrap.** A Shape slider pulls the shell around the parts like shrink film: a morphological closing (a ball rolled over the parts, computed with a 3D distance transform) fills the hollows between them and rounds the edges, then a surface-nets mesher turns it into the rendered shell, with perforations drawn by a shader. Every part body stays at least one wall inside. Organic shells report their own size, volume and panel weight, and export as a hollow STL.
+- **3D airflow simulation.** *Simulate airflow* runs an incompressible flow and heat simulation of the case and the room air around it (staggered grid, ~1 cm cells, fans on their fan curves with swirl, porous radiators, fins, PSU and panels, buoyancy) in a worker. The 3D view animates thousands of tracer streaks coloured from room temperature to hot, with an optional temperature slice. See [docs/airflow-sim-brief.md](docs/airflow-sim-brief.md) for the goals and limits.
+- **Shape the airflow.** In the spirit of McLaren's brake ducting, an optimiser tries exhaust deflectors (louvres angled to throw hot plumes away from intakes), intake ducts (sealing a fan to its vent so it can't breathe case air) and radiator fan reversals, keeping each only if the simulation says the air entering the heat sources gets cooler. Kept changes are drawn in copper in the 3D view. In the test case of an exhaust beside an intake, a deflector cuts the re-ingested heat from +8.0 °C to +2.0 °C.
+- **3D-printable pieces.** Export → *3D-printable pieces* turns the shell (box or organic) into solid walls with the vent holes and I/O cut-outs cut through, splits it on straight planes to fit your print bed, and downloads one closed STL per piece in a zip.
 - **GPU mounting toggle.** Put the card straight in the motherboard's x16 slot, on a riser cable, or let the solver try both (Parts → Graphics card → Mounting).
 - **Searches layouts, not just one template.** Four layout families: *flat* (everything in one layer, GPU on a riser), *sandwich* (GPU behind the board), *direct slot* (no riser), and *direct slot with parts stacked behind the board*. Within each family it tries every orientation of the PSU and radiators, every placement, and three gap sizes (plus 15 mm slim radiator fans if you allow them).
 - **Airflow estimate.** Fan curves against panel, radiator and gap losses, a one-zone case pressure balance, and the air temperature rise at every heat source. It's a first-order estimate, not CFD.
@@ -93,7 +96,8 @@ In the catalogue dialog, *Look it up with Claude* sends the part name to Claude 
 
 ## Known limits
 
-- The STL is the hollow shell without vents or cut-outs. The SVG panel drawings carry those, as flat faces without bend allowances.
+- The one-piece STL is the shell surface without vents; the 3D-printable pieces have the vents and cut-outs. Neither includes standoffs, screw bosses or fan mounting holes.
+- The airflow simulation is coarse (~1 cm cells): it doesn't resolve blades, fin passages or boundary layers, and it under-predicts airflow through dense radiators compared with the fan-curve model. Use it to compare options.
 - The direct-slot card position, socket and x16-slot locations and the riser path are typical values, not taken from your specific board.
 - Cables are modelled as clearance boxes (PSU cable face, GPU power connector, hoses), not routed.
 - Built-in AIO GPU entries are few and unverified. For anything else, use the catalogue, the Claude lookup or the spec sheet.

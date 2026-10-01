@@ -1,0 +1,143 @@
+import { describe, expect, it } from 'vitest';
+import { defaultConfig } from '../src/model/presets';
+import { buildScene } from '../src/cfd/scene';
+import { CELL_SOLID, FlowSolver, type Scene } from '../src/cfd/solver';
+import { simulate } from '../src/cfd/run';
+import { solve } from '../src/solver/solve';
+
+/** A bare test scene: n cells of size h, all fluid. */
+function emptyScene(n: [number, number, number], h = 10): Scene {
+  const total = n[0] * n[1] * n[2];
+  return {
+    n,
+    h,
+    origin: [0, 0, 0],
+    cellType: new Uint8Array(total),
+    beta: [new Float32Array(total), new Float32Array(total), new Float32Array(total)],
+    fans: [],
+    louvres: [],
+    heat: [],
+    up: { axis: 2, sign: 1 },
+    interior: new Int32Array(0),
+  };
+}
+
+const idx = (s: Scene, i: number, j: number, k: number) => i + s.n[0] * (j + s.n[1] * k);
+
+describe('flow solver', () => {
+  it('keeps a ducted fan flow divergence-free and close to the imposed flow', () => {
+    // A square duct along x, walls around it, a fan in the middle.
+    const s = emptyScene([30, 8, 8]);
+    for (let k = 0; k < 8; k++)
+      for (let j = 0; j < 8; j++)
+        for (let i = 0; i < 30; i++) if (j === 0 || j === 7 || k === 0 || k === 7) s.cellType[idx(s, i, j, k)] = CELL_SOLID;
+    const cells: number[] = [];
+    for (let k = 1; k < 7; k++) for (let j = 1; j < 7; j++) cells.push(idx(s, 15, j, k));
+    // Free-air 1000 mm/s, open duct: the fan should run close to free air.
+    s.fans.push({ cells: Int32Array.from(cells), axis: 0, sign: 1, speed: 1000, vmax: 1000, a0: 2e5, center: [155, 40, 40], swirl: 0, group: 'f' });
+    const sim = new FlowSolver(s);
+    for (let t = 0; t < 300; t++) sim.step(0.01, 40);
+    // Mean axial speed across the duct, a few cells downstream.
+    let sum = 0;
+    for (let k = 1; k < 7; k++) for (let j = 1; j < 7; j++) sum += sim.centre(idx(s, 22, j, k))[0];
+    const mean = sum / 36;
+    expect(mean).toBeGreaterThan(850);
+    expect(mean).toBeLessThan(1150);
+    expect(sim.divergence()).toBeLessThan(15); // 1/s, against ~100 /s of shear
+  });
+
+  it('lets warm air rise when nothing blows', () => {
+    const s = emptyScene([10, 10, 14]);
+    const heat: number[] = [];
+    for (let j = 4; j < 6; j++) for (let i = 4; i < 6; i++) heat.push(idx(s, i, j, 2));
+    s.heat.push({ id: 'h', label: 'h', cells: Int32Array.from(heat), watts: 20 });
+    const sim = new FlowSolver(s);
+    for (let t = 0; t < 200; t++) sim.step(0.02, 30);
+    const above = sim.T[idx(s, 5, 5, 9)];
+    const below = sim.T[idx(s, 5, 5, 0)];
+    expect(sim.centre(idx(s, 5, 5, 6))[2]).toBeGreaterThan(0);
+    expect(above).toBeGreaterThan(below);
+  });
+});
+
+describe('case simulation', () => {
+  const cfg = defaultConfig();
+  cfg.prefs.organic = 0;
+  const design = solve(cfg, { beamWidth: 12, wrapMetrics: false }).designs[0];
+
+  it('builds a scene with the design’s fans, heat sources and a closed shell', () => {
+    const sc = buildScene(design, cfg, undefined, { cells: 20000 });
+    expect(sc.fans.length).toBeGreaterThanOrEqual(3);
+    expect(sc.heat.map((x) => x.id)).toEqual(expect.arrayContaining(['cpu', 'rad-gpu', 'psu']));
+    expect(sc.interior.length).toBeGreaterThan(100);
+    for (const f of sc.fans) expect(f.speed).toBeGreaterThan(50);
+  });
+
+  it('heats the air passing through the radiator by about what the fan model says', () => {
+    const t0 = performance.now();
+    const st = simulate(design, cfg, { louvres: [], ducts: [], flipped: [] }, { cells: 20000, seconds: 2 });
+    const ms = performance.now() - t0;
+    const rad = st.sources.find((s) => s.id === 'rad-gpu')!;
+    const model = design.flow.groups.find((g) => g.id === 'rad-gpu')!;
+    console.log(`sim ${ms.toFixed(0)} ms; rad inlet +${rad.inletRise.toFixed(2)} K mean +${rad.meanRise.toFixed(2)} K; model ΔT ${model.deltaC.toFixed(2)} K; case +${st.caseRise.toFixed(2)} K`);
+    // Mean core temperature sits near half the through-flow rise (inlet ~0, outlet ~ΔT).
+    expect(rad.meanRise).toBeGreaterThan(model.deltaC * 0.2);
+    expect(rad.meanRise).toBeLessThan(model.deltaC * 2.5);
+    expect(rad.inletRise).toBeLessThan(model.deltaC);
+  });
+});
+
+describe('recirculation and deflectors', () => {
+  /**
+   * A wall at x = 20 cells with two openings side by side: an exhaust blowing hot air out (+x)
+   * and an intake pulling air back in (−x) a few cells away. Some exhaust gets re-ingested; a
+   * deflector that throws the exhaust away from the intake should lower the intake temperature.
+   */
+  const build = (deflect: boolean) => {
+    const s = emptyScene([34, 22, 10], 10);
+    const [nx, ny, nz] = s.n;
+    for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) s.cellType[idx(s, 20, j, k)] = CELL_SOLID;
+    const exhaust: number[] = [];
+    const intake: number[] = [];
+    const heatCells: number[] = [];
+    for (let k = 3; k < 7; k++) {
+      for (let j = 6; j < 10; j++) {
+        s.cellType[idx(s, 20, j, k)] = 0;
+        exhaust.push(idx(s, 20, j, k));
+        heatCells.push(idx(s, 18, j, k));
+      }
+      for (let j = 12; j < 16; j++) {
+        s.cellType[idx(s, 20, j, k)] = 0;
+        intake.push(idx(s, 20, j, k));
+      }
+    }
+    // Inside the box the two streams are separated by a baffle.
+    for (let k = 0; k < nz; k++) for (let i = 0; i < 20; i++) s.cellType[idx(s, i, 11, k)] = CELL_SOLID;
+    s.fans.push({ cells: Int32Array.from(exhaust), axis: 0, sign: 1, speed: 1500, vmax: 2500, a0: 3e5, center: [205, 80, 50], swirl: 0, group: 'out' });
+    s.fans.push({ cells: Int32Array.from(intake), axis: 0, sign: -1, speed: 1500, vmax: 2500, a0: 3e5, center: [205, 140, 50], swirl: 0, group: 'in' });
+    s.heat.push({ id: 'h', label: 'h', cells: Int32Array.from(heatCells), watts: 150 });
+    s.heat.push({ id: 'in', label: 'intake', cells: Int32Array.from(intake), watts: 0.0001 });
+    if (deflect) {
+      // Louvres one cell outside the exhaust, throwing air toward −y (away from the intake).
+      const cells = exhaust.map((c) => c + 1);
+      const a = (40 * Math.PI) / 180;
+      s.louvres.push({ cells: Int32Array.from(cells), dir: [Math.cos(a), -Math.sin(a), 0], normal: [1, 0, 0] });
+    }
+    void nx;
+    void ny;
+    return s;
+  };
+  const intakeRise = (deflect: boolean) => {
+    const sim = new FlowSolver(build(deflect));
+    for (let t = 0; t < 260; t++) sim.step(0.01, 30);
+    return sim.stats().sources.find((x) => x.id === 'in')!.meanRise;
+  };
+
+  it('sees hot exhaust re-ingested, and less of it with the deflector', () => {
+    const plain = intakeRise(false);
+    const deflected = intakeRise(true);
+    console.log(`intake rise: plain +${plain.toFixed(2)} K, deflected +${deflected.toFixed(2)} K`);
+    expect(plain).toBeGreaterThan(0.1);
+    expect(deflected).toBeLessThan(plain);
+  });
+});

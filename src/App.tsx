@@ -11,6 +11,8 @@ import { MeshClient, type ShellResult } from './state/meshClient';
 import { SolverClient } from './state/solverClient';
 import { ModelPanel } from './ui/ModelPanel';
 import { PartsPanel } from './ui/PartsPanel';
+import { PrintDialog } from './ui/PrintDialog';
+import { SimPanel } from './ui/SimPanel';
 import { AirflowTable, Candidates, Checks, Summary } from './ui/ResultsPanel';
 import { TunePanel } from './ui/TunePanel';
 import { ViewerPanel } from './ui/ViewerPanel';
@@ -60,6 +62,7 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(readTheme);
   const [toast, setToast] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [printOpen, setPrintOpen] = useState(false);
   const wide = useMedia('(min-width: 1180px)');
   const systemDark = useMedia('(prefers-color-scheme: dark)');
   const hostTheme = useHostTheme();
@@ -194,6 +197,7 @@ export default function App() {
     <>
       <Summary d={design} cfg={cfg} />
       <AirflowTable d={design} cfg={cfg} />
+      <SimPanel design={design} cfg={cfg} viewer={() => viewerRef.current} />
       <Checks d={design} />
       <Candidates result={result} selected={design.id} onSelect={setSelected} />
     </>
@@ -232,8 +236,18 @@ export default function App() {
                   </>
                 ) : (
                   <>
+                    <button
+                      role="menuitem"
+                      type="button"
+                      onClick={() => {
+                        setExportOpen(false);
+                        setPrintOpen(true);
+                      }}
+                    >
+                      3D-printable pieces <span>STL zip</span>
+                    </button>
                     <button role="menuitem" type="button" onClick={() => doExport('stl')}>
-                      Shell for 3D printing <span>STL</span>
+                      Shell surface, one piece <span>STL</span>
                     </button>
                     <button role="menuitem" type="button" disabled={cfg.prefs.organic > 0} title={cfg.prefs.organic > 0 ? 'Flat panels exist only for the straight box (Shape slider at 0)' : undefined} onClick={() => doExport('svg')}>
                       Flat panel drawings <span>{cfg.prefs.organic > 0 ? 'box only' : 'SVG'}</span>
@@ -314,6 +328,7 @@ export default function App() {
           </aside>
         )}
       </main>
+      {printOpen && design && <PrintDialog design={design} cfg={cfg} onClose={() => setPrintOpen(false)} />}
       {toast && (
         <div className="toast" role="status">
           {toast}

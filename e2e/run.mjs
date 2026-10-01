@@ -136,6 +136,29 @@ for (const [name, vp, opts] of [
   await ctx.close();
 }
 
+// ---- shrinkwrap, airflow simulation and printable export
+{
+  const { ctx, page } = await open('sim', { width: 1440, height: 900 }, {});
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+  await page.waitForTimeout(1500);
+  const shellShown = await page.evaluate(() => window.__caseblanketViewer.flow !== undefined);
+  check(shellShown, 'viewer exposes the flow layer');
+  await page.getByRole('button', { name: 'Simulate airflow' }).click();
+  await page.waitForSelector('.sim-table', { timeout: 30000 });
+  await page.waitForTimeout(2000);
+  const active = await page.evaluate(() => window.__caseblanketViewer.flow.active);
+  check(active, 'simulated airflow particles animate in the 3D view');
+  await page.screenshot({ path: `${out}/sim.png` });
+  await page.getByRole('button', { name: 'Stop' }).click().catch(() => {});
+  await page.getByRole('button', { name: 'Export' }).click();
+  await page.getByRole('menuitem', { name: /3D-printable pieces/ }).click();
+  const dl = page.waitForEvent('download', { timeout: 120000 });
+  await page.getByRole('button', { name: 'Build and download' }).click();
+  const file = await dl;
+  check(/\.zip$/.test(file.suggestedFilename()), `3D-printable export downloads ${file.suggestedFilename()}`);
+  await ctx.close();
+}
+
 await browser.close();
 if (logs.length) console.log('Console errors:\n' + logs.join('\n'));
 check(logs.length === 0, 'no console errors');
