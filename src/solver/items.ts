@@ -318,6 +318,9 @@ function oriented24(
   for (const frame of allFrames()) build(orient(size, frame, clears(frame)), frame);
 }
 
+/** Room in front of a PSU inlet inside the case for a right-angle C13 plug, mm (typical ~18). */
+export const PSU_PLUG_ROOM = 20;
+
 function psuVariants(ctx: BuildContext, layers: LayerId[]): Variant[] {
   const { cfg, profile } = ctx;
   const p = cfg.parts.psu;
@@ -327,6 +330,8 @@ function psuVariants(ctx: BuildContext, layers: LayerId[]): Variant[] {
     [
       { side: 0, depth: p.fanOn === 'end' ? Math.max(p.cableClearance, fanGap) : p.cableClearance },
       { side: 4, depth: p.fanOn === 'face' ? fanGap : 0 },
+      // Inlet inside the case (fed by an IEC extension): room for a right-angle C13 plug.
+      { side: 1, depth: cfg.prefs.psuInletAtBack ? 0 : PSU_PLUG_ROOM },
     ],
     tol,
   );

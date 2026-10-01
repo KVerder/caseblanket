@@ -167,6 +167,7 @@ describe('flow-shaping optimiser', () => {
     const cfg = defaultConfig();
     cfg.parts.cooler = structuredClone(COOLERS.find((c) => c.kind === 'air-tower')!);
     cfg.prefs.loadProfile = 'full';
+    cfg.prefs.psuInletAtBack = false;
     const d = solve(cfg, { wrapMetrics: false }).space.find((x) => x.chamber)!;
     const r = optimiseShaping(d, cfg);
     let margin = r.baselineThermal.worstMargin;

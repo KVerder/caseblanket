@@ -5,6 +5,7 @@ import { meshGrid, shellField, type Grid, type ShellMesh } from '../solver/shrin
 import { PARTITION_THICKNESS } from '../solver/chambers';
 import { plateMesh } from '../solver/partitions';
 import { DEFAULT_SLICER, OVERHANG_DEG, type Manifest, type SlicerSettings } from './analysis';
+import { bossMesh, fanHoleSpacing, mergeMeshes, mountPlan, psuHoles, type MountPlan, type Standoff } from './mounts';
 
 /**
  * Print-ready shell: the wall as a solid (outer surface down to one wall thickness in), with vent
@@ -33,7 +34,7 @@ export interface PrintPiece {
 }
 
 /** Signed distance (negative inside) of the printable wall material, in solver coordinates. */
-export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions) {
+export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, plan?: MountPlan) {
   const F = shellField(design, cfg, cfg.prefs.organic ?? 0);
   const wall = design.wall;
   const r = opt.holeDiameter / 2;
@@ -43,6 +44,26 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions) 
     const a = axisOf(v.wall);
     const [xa, ya] = wallAxes(a);
     return { a, xa, ya, s: signOf(v.wall), rect: v.rect, solidCut: v.kind === 'io' || v.kind === 'bracket' };
+  });
+  // Mounting: openings cut through, screw holes through, and solid land around each screw.
+  for (const o of plan?.openings ?? []) {
+    const a = axisOf(o.wall);
+    const [xa, ya] = wallAxes(a);
+    cuts.push({ a, xa, ya, s: signOf(o.wall), rect: o.rect, solidCut: true });
+  }
+  const screws = (plan?.holes ?? []).map((h) => {
+    const a = axisOf(h.wall);
+    const [xa, ya] = wallAxes(a);
+    return { a, xa, ya, s: signOf(h.wall), x: h.x, y: h.y, r: h.d / 2 };
+  });
+  const LAND = 3.5;
+  const keep = [
+    ...screws.map((h) => ({ a: h.a, s: h.s, x: h.x, y: h.y, r: h.r + LAND })),
+    ...(plan?.solid ?? []).map((k) => ({ a: axisOf(k.wall), s: signOf(k.wall), x: k.x, y: k.y, r: k.r })),
+  ];
+  const bulk = (plan?.bulkheads ?? []).map((b) => {
+    const [xa, ya] = wallAxes(b.axis);
+    return { ...b, xa, ya };
   });
   const holeDist = (x: number, y: number) => {
     const ri = Math.round(y / rowH);
@@ -58,7 +79,19 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions) 
     const f = F(p);
     // Band between the outer surface and one wall in.
     let d = Math.abs(f + wall / 2) - wall / 2;
-    if (d > 3) return d;
+    // Bulkhead plates (fused to the wall), with their own holes and opening.
+    let plate = Infinity;
+    for (const b of bulk) {
+      let e = boxSdf(p, b.slab);
+      if (e > 3) {
+        plate = Math.min(plate, e);
+        continue;
+      }
+      for (const h of b.holes) e = Math.max(e, h.d / 2 - Math.hypot(p[b.xa] - h.x, p[b.ya] - h.y));
+      if (b.opening) e = Math.max(e, -Math.max(b.opening.x0 - p[b.xa], p[b.xa] - b.opening.x1, b.opening.y0 - p[b.ya], p[b.ya] - b.opening.y1));
+      plate = Math.min(plate, e);
+    }
+    if (d > 3) return Math.min(d, plate);
     for (const c of cuts) {
       // Only cut the wall on the vent's own side of the case.
       const mid = design.interior[c.a] / 2;
@@ -71,10 +104,16 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions) 
         d = Math.max(d, -inside);
       } else {
         if (x < R.x0 + r + 1 || x > R.x1 - r - 1 || y < R.y0 + r + 1 || y > R.y1 - r - 1) continue;
+        if (keep.some((h) => h.a === c.a && h.s === c.s && Math.hypot(x - h.x, y - h.y) < h.r + r)) continue;
         d = Math.max(d, -holeDist(x, y));
       }
     }
-    return d;
+    for (const h of screws) {
+      const mid = design.interior[h.a] / 2;
+      if (h.s > 0 ? p[h.a] < mid : p[h.a] > mid) continue;
+      d = Math.max(d, h.r - Math.hypot(p[h.xa] - h.x, p[h.ya] - h.y));
+    }
+    return Math.min(d, plate);
   };
 }
 
@@ -133,17 +172,26 @@ export function meshPiece(solid: (p: Vec3) => number, box: Box, cell: number): S
   return meshGrid(g, 0);
 }
 
-export function printPieces(design: Design, cfg: DesignConfig, opt: PrintOptions, progress?: (done: number, total: number) => void): PrintPiece[] {
-  const solid = wallSolid(design, cfg, opt);
+export function printPieces(design: Design, cfg: DesignConfig, opt: PrintOptions, progress?: (done: number, total: number) => void, plan = mountPlan(design, cfg)): PrintPiece[] {
+  const solid = wallSolid(design, cfg, opt, plan);
   const boxes = planPieces(design, opt);
   const out: PrintPiece[] = [];
+  // Each standoff goes with the piece that holds all of it; one cut by a joint is printed on its own.
+  const inside = (s: Standoff, b: Box) => {
+    const m = bossMesh(s).bbox;
+    return [0, 1, 2].every((a) => m.min[a] >= b.min[a] - 0.01 && m.max[a] <= b.max[a] + 0.01);
+  };
+  const loose = plan.standoffs.filter((s) => !boxes.some((b) => inside(s, b)));
   boxes.forEach((box, idx) => {
     progress?.(idx, boxes.length);
     const ext = Math.max(...[0, 1, 2].map((a) => box.max[a] - box.min[a]));
     const cell = Math.min(1.8, Math.max(1, ext / 160, opt.holeDiameter / 4));
-    const mesh = meshPiece(solid, box, cell);
+    let mesh = meshPiece(solid, box, cell);
+    const bosses = plan.standoffs.filter((s) => !loose.includes(s) && inside(s, box) && boxes.find((b) => inside(s, b)) === box);
+    if (mesh.indices.length && bosses.length) mesh = mergeMeshes([mesh, ...bosses.map((s) => bossMesh(s))]);
     if (mesh.indices.length) out.push({ name: `piece-${String(out.length + 1).padStart(2, '0')}`, box, mesh });
   });
+  loose.forEach((s, i) => out.push({ name: `standoff-${i + 1}`, box: bossMesh(s).bbox, mesh: bossMesh(s) }));
   // Partition plates, trimmed to the shell, cut into strips that fit the bed.
   if (design.chamber) {
     const F = shellField(design, cfg, cfg.prefs.organic ?? 0);
@@ -171,6 +219,98 @@ export function printPieces(design: Design, cfg: DesignConfig, opt: PrintOptions
   }
   progress?.(boxes.length, boxes.length);
   return out;
+}
+
+/**
+ * Fit-test plates, to print before the case: the board's standoffs on a thin plate (screw the
+ * board onto it), a template per fan size and the PSU face (hold them against the parts). Each
+ * takes minutes; they catch a wrong hole pattern before hours of printing.
+ */
+export function fitTestPieces(design: Design, cfg: DesignConfig, plan: MountPlan): PrintPiece[] {
+  const out: PrintPiece[] = [];
+  const T = 3;
+  const plateSdf = (lo: Vec3, hi: Vec3) => (p: Vec3) => boxSdf(p, { min: lo, max: hi });
+  const flat = (sdf: (p: Vec3) => number, lo: Vec3, hi: Vec3, cell = 0.5) => meshPiece(sdf, { min: lo, max: hi }, cell);
+  // Board: plate under the standoffs, bosses 8 mm tall with insert holes.
+  if (plan.standoffs.length) {
+    const xs = plan.standoffs.map((st) => st.top[0]);
+    const ys = plan.standoffs.map((st) => st.top[1]);
+    const x0 = Math.min(...xs) - 10;
+    const y0 = Math.min(...ys) - 10;
+    const lo: Vec3 = [0, 0, 0];
+    const hi: Vec3 = [Math.max(...xs) - x0 + 10, Math.max(...ys) - y0 + 10, T];
+    // Lighten the plate: keep a frame and the corners around each boss.
+    const holesAt = plan.standoffs.map((st) => [st.top[0] - x0, st.top[1] - y0] as [number, number]);
+    const sdf = (p: Vec3) => {
+      let d = plateSdf(lo, hi)(p);
+      const inner = -boxSdf(p, { min: [12, 12, -1], max: [hi[0] - 12, hi[1] - 12, T + 1] });
+      const nearBoss = Math.min(...holesAt.map(([x, y]) => Math.hypot(p[0] - x, p[1] - y))) - 12;
+      d = Math.max(d, Math.min(inner, nearBoss));
+      return d;
+    };
+    const plate = flat(sdf, lo, hi, 1);
+    const bosses = holesAt.map(([x, y], i) => bossMesh({ label: `fit ${i + 1}`, top: [x, y, T + 8], base: [x, y, T / 2], axis: 2, length: 8 + T / 2 }));
+    out.push({ name: 'fit-board-standoffs', box: { min: lo, max: [hi[0], hi[1], T + 8] }, mesh: mergeMeshes([plate, ...bosses]) });
+  }
+  // Fans: one template per size used, with the bore and the four holes.
+  const sizes = [...new Set(design.parts.filter((p) => p.fan && (p.kind === 'rad-cpu' || p.kind === 'rad-gpu')).map((p) => p.fan!.size))];
+  for (const size of sizes) {
+    const sp = fanHoleSpacing(size);
+    if (!sp) continue;
+    const W = size + 6;
+    const c = W / 2;
+    const sdf = (p: Vec3) => {
+      let d = boxSdf(p, { min: [0, 0, 0], max: [W, W, 2.4] });
+      d = Math.max(d, size / 2 - 4 - Math.hypot(p[0] - c, p[1] - c));
+      for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) d = Math.max(d, 2.5 - Math.hypot(p[0] - c - (dx * sp.spacing) / 2, p[1] - c - (dy * sp.spacing) / 2));
+      return d;
+    };
+    out.push({ name: `fit-fan-${size}`, box: { min: [0, 0, 0], max: [W, W, 2.4] }, mesh: flat(sdf, [0, 0, 0], [W, W, 2.4]) });
+  }
+  // PSU face: holes, the opening, and a notch on the fan side's edge.
+  const ph = psuHoles(cfg.parts.psu);
+  if (ph) {
+    const Wd = cfg.parts.psu.width;
+    const Hd = cfg.parts.psu.height;
+    const sdf = (p: Vec3) => {
+      const x = p[0] - Wd / 2;
+      const y = p[1] - Hd / 2;
+      let d = boxSdf(p, { min: [0, 0, 0], max: [Wd, Hd, 2.4] });
+      for (const [hx, hy] of ph.holes) d = Math.max(d, 2.5 - Math.hypot(x - hx, y - hy));
+      d = Math.max(d, -Math.max(Math.abs(x) - ph.opening.hx, Math.abs(y) - ph.opening.hy));
+      d = Math.max(d, 3 - Math.hypot(x, y - Hd / 2));
+      return d;
+    };
+    out.push({ name: `fit-psu-${cfg.parts.psu.formFactor}`, box: { min: [0, 0, 0], max: [Wd, Hd, 2.4] }, mesh: flat(sdf, [0, 0, 0], [Wd, Hd, 2.4]) });
+  }
+  return out;
+}
+
+/** Hardware list and assembly order, from the mount plan. */
+export function buildGuide(plan: MountPlan, fits: PrintPiece[]): string[] {
+  return [
+    'BUILD GUIDE',
+    '',
+    '1. Print the fit tests first (fit-test/, minutes each), and check them against your parts:',
+    ...fits.map((f) => `   - ${f.name}.stl` + (f.name.startsWith('fit-board') ? ': melt in the inserts, screw your motherboard on — all four holes must line up.' : f.name.startsWith('fit-fan') ? ': hold it on a fan; the four holes must meet the fan’s screw holes.' : ': hold it against the PSU’s inlet end; the notch marks the fan side. The holes must meet the PSU’s threads.')),
+    '   Any mismatch: correct it in Parts (board mounting holes) before printing the case.',
+    '',
+    '2. Print the pieces. Standoffs are printed on the bottom panel with their insert holes; screw holes, the PSU opening, the power button and (if needed) the IEC socket cut-out are cut through.',
+    '3. Glue the pieces; let it cure.',
+    '4. Heat-set the M3 inserts into the standoffs (soldering iron at the filament’s print temperature, press straight down, let cool).',
+    '5. Fit the PSU (screws through its plate or the panel), then the radiator(s) through the panel and fans, then the motherboard (CPU, cooler and RAM already on it), then the graphics card.',
+    '6. Wire the power button to the board’s PWR_SW pins; mains through the PSU inlet or the IEC socket. Earth: tie one standoff to PSU ground.',
+    '',
+    'Hardware:',
+    ...plan.hardware.map((h) => `  ${h.qty} × ${h.item} — ${h.note}`),
+    '',
+    'Check before building:',
+    ...plan.warnings.map((w) => `  ! ${w}`),
+    '',
+    'Where the dimensions come from:',
+    ...plan.sources.map((s) => `  ${s}`),
+    '',
+  ];
 }
 
 // ------------------------------------------------------------------ files
@@ -281,7 +421,7 @@ export function zip(files: { name: string; data: Uint8Array }[]): Uint8Array {
   return out;
 }
 
-export function printReadme(design: Design, opt: PrintOptions, pieces: PrintPiece[], manifest?: Manifest): string {
+export function printReadme(design: Design, opt: PrintOptions, pieces: PrintPiece[], manifest?: Manifest, plan?: MountPlan, fits: PrintPiece[] = []): string {
   const s = opt.slicer ?? DEFAULT_SLICER;
   const lines = [
     'caseblanket — 3D-printable shell',
@@ -294,11 +434,12 @@ export function printReadme(design: Design, opt: PrintOptions, pieces: PrintPiec
           '',
           ...manifest.flags.map((f) => `! ${f}`),
           '',
-          'Threaded inserts and grounding:',
-          ...manifest.inserts.map((i) => `  ${i.count} × ${i.what}: ${i.note}`),
-          '',
+          ...(plan
+            ? []
+            : ['Threaded inserts and grounding:', ...manifest.inserts.map((i) => `  ${i.count} × ${i.what}: ${i.note}`), '']),
         ]
       : []),
+    ...(plan ? buildGuide(plan, fits) : []),
     `Wall ${design.wall} mm (set the material and wall thickness in Tune → Shape & finish; 2.4 mm or more suits FDM printing).`,
     `Vents: ${opt.holeDiameter} mm holes on a ${opt.holePitch} mm hex pitch. I/O and GPU bracket openings are cut through.`,
     `Pieces are cut on straight planes to fit a ${opt.bed.join(' × ')} mm bed; glue or bridge them along the cut faces.`,
@@ -315,7 +456,9 @@ export function printReadme(design: Design, opt: PrintOptions, pieces: PrintPiec
           `partition-*.stl are the ${PARTITION_THICKNESS} mm internal walls that split the case into ${design.chamber.chambers.length} air chambers. Glue them into the shell; the round holes take hoses and cables (fit grommets or foam to seal them).`,
         ]
       : []),
-    'Not included as geometry: standoff bosses, screw holes, alignment pins and fan mounting holes; add them in your CAD tool (the insert list above says where they go). Joints: glue the cut faces and seal them; the airflow model counts a 0.1 mm leak along every joint.',
+    plan
+      ? 'Joints: glue the cut faces (PETG: medium CA or a PETG solvent cement) and seal them; the airflow model counts a 0.1 mm leak along every joint. No alignment pins are generated: tape the pieces square while the glue sets.'
+      : 'Not included as geometry: standoff bosses, screw holes, alignment pins and fan mounting holes; add them in your CAD tool (the insert list above says where they go). Joints: glue the cut faces and seal them; the airflow model counts a 0.1 mm leak along every joint.',
   ];
   return lines.join('\n');
 }

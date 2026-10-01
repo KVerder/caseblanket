@@ -452,7 +452,7 @@ export const DEFAULT_PREFS: Preferences = {
   topologies: { flat: true, sandwich: true, direct: true, 'direct-stack': true },
   riserLength: 200,
   gpuMount: 'any',
-  psuInletAtBack: false,
+  psuInletAtBack: true,
   tolerance: 2,
   maxWidth: 0,
   maxHeight: 0,

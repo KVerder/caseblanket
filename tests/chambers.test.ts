@@ -15,6 +15,8 @@ function airConfig(): DesignConfig {
   const cfg = defaultConfig();
   cfg.parts.cooler = structuredClone(COOLERS.find((c) => c.kind === 'air-tower')!);
   cfg.prefs.loadProfile = 'full';
+  // The PSU may sit inside (fed by an IEC extension), breathing case air: the scenario partitions are for.
+  cfg.prefs.psuInletAtBack = false;
   return cfg;
 }
 

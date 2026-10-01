@@ -64,6 +64,8 @@ export interface MotherboardSpec {
   slotV: number;
   /** Heat from VRM, chipset, RAM and SSDs. */
   heatW: number;
+  /** Mounting holes (u from the rear-I/O edge, v from the bottom/slot edge), mm; standard positions when absent. */
+  mountHoles?: [number, number][];
   source: SourceInfo;
 }
 

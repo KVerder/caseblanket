@@ -162,6 +162,15 @@ for (const [name, vp, opts] of [
   await page.getByRole('button', { name: 'Build and download' }).click();
   const file = await dl;
   check(/\.zip$/.test(file.suggestedFilename()), `3D-printable export downloads ${file.suggestedFilename()}`);
+  {
+    const { readFileSync } = await import('node:fs');
+    const bytes = readFileSync(await file.path()).toString('latin1');
+    const hasFits = ['fit-test/fit-board-standoffs.stl', 'fit-test/fit-fan-120.stl'].every((n) => bytes.includes(n));
+    check(hasFits && bytes.includes('BUILD GUIDE'), 'the print zip has the fit-test plates and a build guide');
+    await page.getByText('Hardware to buy').waitFor({ timeout: 10000 });
+    const hw = await page.locator('.hardware li').count();
+    check(hw >= 4, `the print dialog lists the hardware to buy (${hw} lines)`);
+  }
   await ctx.close();
 }
 

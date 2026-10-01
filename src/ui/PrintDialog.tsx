@@ -4,6 +4,7 @@ import type { DesignConfig } from '../model/types';
 import { MATERIALS } from '../model/presets';
 import { DEFAULT_SLICER, type Manifest, type SlicerSettings } from '../print/analysis';
 import { DEFAULT_PRINT, planPieces, type PrintOptions } from '../print/printable';
+import type { MountPlan } from '../print/mounts';
 import { download } from '../render/export';
 import type { Design } from '../solver/evaluate';
 import { NumberField } from './fields';
@@ -14,7 +15,7 @@ export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: Des
   const worker = useRef<Worker | null>(null);
   const preferred = MATERIALS.find((m) => m.id === cfg.prefs.materialId && m.print)?.id ?? 'petg';
   const [opt, setOpt] = useState<PrintOptions>({ ...DEFAULT_PRINT, bed: cfg.prefs.buildVolume ?? DEFAULT_PRINT.bed, filament: preferred });
-  const [state, setState] = useState<{ busy: boolean; done: number; total: number; error?: string; result?: string; manifest?: Manifest }>({ busy: false, done: 0, total: 0 });
+  const [state, setState] = useState<{ busy: boolean; done: number; total: number; error?: string; result?: string; manifest?: Manifest; plan?: MountPlan }>({ busy: false, done: 0, total: 0 });
   const slicer = opt.slicer ?? DEFAULT_SLICER;
   const setSlicer = (k: keyof SlicerSettings, v: number) => setOpt((o) => ({ ...o, slicer: { ...(o.slicer ?? DEFAULT_SLICER), [k]: v } }));
   useEffect(() => {
@@ -30,12 +31,12 @@ export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: Des
     worker.current = w;
     setState({ busy: true, done: 0, total: pieces });
     w.onmessage = (e) => {
-      const d = e.data as { progress?: { done: number; total: number }; zip?: Uint8Array; pieces?: number; manifest?: Manifest; error?: string };
+      const d = e.data as { progress?: { done: number; total: number }; zip?: Uint8Array; pieces?: number; manifest?: Manifest; plan?: MountPlan; error?: string };
       if (d.progress) setState((s) => ({ ...s, ...d.progress }));
       if (d.zip) {
         const stem = `caseblanket-print-${Math.round(design.world.width)}x${Math.round(design.world.height)}x${Math.round(design.world.depth)}`;
         download(new Blob([d.zip.buffer as ArrayBuffer], { type: 'application/zip' }), `${stem}.zip`);
-        setState({ busy: false, done: 0, total: 0, result: `${d.pieces} pieces, ${(d.zip.length / 1e6).toFixed(0)} MB.`, manifest: d.manifest });
+        setState({ busy: false, done: 0, total: 0, result: `${d.pieces} pieces and fit tests, ${(d.zip.length / 1e6).toFixed(0)} MB. Print fit-test/ first; README.txt has the build guide.`, manifest: d.manifest, plan: d.plan });
         w.terminate();
       }
       if (d.error) setState({ busy: false, done: 0, total: 0, error: d.error });
@@ -107,7 +108,7 @@ export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: Des
           </p>
         )}
         {state.result && <p className="small">Saved: {state.result}</p>}
-        {state.manifest && <ManifestView m={state.manifest} />}
+        {state.manifest && <ManifestView m={state.manifest} plan={state.plan} />}
         {state.error && <p className="error-text">{state.error}</p>}
       </div>
       <div className="catalog-foot">
@@ -119,7 +120,7 @@ export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: Des
   );
 }
 
-function ManifestView({ m }: { m: Manifest }) {
+function ManifestView({ m, plan }: { m: Manifest; plan?: MountPlan }) {
   return (
     <div className="manifest">
       <p className="small">
@@ -165,15 +166,43 @@ function ManifestView({ m }: { m: Manifest }) {
             <span>{f}</span>
           </li>
         ))}
-        {m.inserts.map((x) => (
-          <li key={x.what} className="check info">
+        {plan?.warnings.map((w, i) => (
+          <li key={`w${i}`} className="check warn">
             <span className="dot" aria-hidden="true" />
-            <span>
-              {x.count} × {x.what}: {x.note}
-            </span>
+            <span>{w}</span>
           </li>
         ))}
+        {!plan &&
+          m.inserts.map((x) => (
+            <li key={x.what} className="check info">
+              <span className="dot" aria-hidden="true" />
+              <span>
+                {x.count} × {x.what}: {x.note}
+              </span>
+            </li>
+          ))}
       </ul>
+      {plan && (
+        <>
+          <h4 className="sub">Hardware to buy</h4>
+          <ul className="checks-list hardware">
+            {plan.hardware.map((h) => (
+              <li key={h.item} className="check info">
+                <span className="dot" aria-hidden="true" />
+                <span>
+                  <b>{h.qty} ×</b> {h.item}
+                  <span className="path-sub">{h.note}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="muted small">
+            Generated: {plan.standoffs.length} board standoffs with insert holes, {plan.holes.length} screw and button holes
+            {plan.openings.length ? `, ${plan.openings.map((o) => o.label).join(' and ')} cut-outs` : ''}
+            {plan.bulkheads.length ? `, a printed ${plan.bulkheads.map((b) => b.label).join(', ')}` : ''}. Dimensions: {plan.sources.join('; ')}.
+          </p>
+        </>
+      )}
     </div>
   );
 }

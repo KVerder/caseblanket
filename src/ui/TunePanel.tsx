@@ -240,7 +240,7 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
             );
           })}
         </div>
-        <Toggle id="psu-back" label="PSU power socket on the back panel" checked={p.psuInletAtBack} onChange={(v) => set('psuInletAtBack', v)} hint="Off lets the PSU sit anywhere, with an internal extension cable to the back" />
+        <Toggle id="psu-back" label="PSU power socket on the back panel" checked={p.psuInletAtBack} onChange={(v) => set('psuInletAtBack', v)} hint="Off lets the PSU sit anywhere (often a smaller case), fed by an internal IEC extension to a panel socket: mains wiring you do yourself" />
         <Grid>
           {p.gpuMount !== 'slot' && (
             <NumberField id="riser" label="Riser cable" unit="mm" value={p.riserLength} min={50} max={600} step={10} onChange={(v) => set('riserLength', v)} />
