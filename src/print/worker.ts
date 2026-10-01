@@ -19,7 +19,7 @@ self.onmessage = (e: MessageEvent<{ design: Design; cfg: DesignConfig; opt: Prin
     }
     const files = pieces.map((p) => ({ name: `${p.name}.stl`, data: stlBinary(p.mesh, cfg) }));
     const fits = fitTestPieces(design, cfg, plan);
-    for (const f of fits) files.push({ name: `fit-test/${f.name}.stl`, data: stlBinary(f.mesh, { ...cfg, prefs: { ...cfg.prefs, orientation: 'console' } }) });
+    for (const f of fits) files.push({ name: `${f.name.startsWith('fit-') ? 'fit-test/' : ''}${f.name}.stl`, data: stlBinary(f.mesh, { ...cfg, prefs: { ...cfg.prefs, orientation: 'console' } }) });
     files.push({ name: 'README.txt', data: enc.encode(printReadme(design, opt, pieces, manifest, plan, fits)) });
     files.push({ name: 'manifest.csv', data: enc.encode(manifestCsv(manifest)) });
     const out = zip(files);

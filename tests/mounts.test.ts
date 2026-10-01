@@ -45,12 +45,13 @@ describe('mounting points', () => {
 
   it('places four Mini-ITX standoffs at the standard spacing, from the PCB down into the wall', () => {
     expect(boardHoles(cfg.parts.board).holes).toHaveLength(4);
-    expect(plan.standoffs).toHaveLength(4);
-    const us = [...new Set(plan.standoffs.map((s) => s.top[0].toFixed(2)))].map(Number).sort((a, b) => a - b);
+    const boardOnes = plan.standoffs.filter((s) => s.label.startsWith('standoff'));
+    expect(boardOnes).toHaveLength(4);
+    const us = [...new Set(boardOnes.map((s) => s.top[0].toFixed(2)))].map(Number).sort((a, b) => a - b);
     expect(us[1] - us[0]).toBeCloseTo(154.94, 2);
     const board = design.parts.find((p) => p.kind === 'board')!;
     const F = shellField(design, cfg, cfg.prefs.organic ?? 0);
-    for (const s of plan.standoffs) {
+    for (const s of boardOnes) {
       expect(s.top[2]).toBeCloseTo(board.body.min[2] + cfg.parts.board.underside, 6);
       // The base is embedded in the wall material (between the inner and outer surface).
       const f = F(s.base);
@@ -102,6 +103,20 @@ describe('mounting points', () => {
         expect(solid(p)).toBeLessThan(0);
       }
     }
+  });
+
+  it('clamps the GPU bracket with two bosses beside its opening, clear of the parts', () => {
+    if (!design.vents.some((v) => v.kind === 'bracket')) return;
+    expect(plan.clamp).toBeDefined();
+    const bosses = plan.standoffs.filter((s) => s.label.includes('bracket'));
+    expect(bosses).toHaveLength(2);
+    const F = shellField(design, cfg, cfg.prefs.organic ?? 0);
+    for (const b of bosses) {
+      expect(b.axis).toBe(0);
+      expect(F(b.base)).toBeGreaterThanOrEqual(-design.wall);
+      expect(b.top[0]).toBeGreaterThan(b.base[0]);
+    }
+    expect(fitTestPieces(design, cfg, plan).some((p) => p.name === 'gpu-bracket-clamp')).toBe(true);
   });
 
   it('places a power button on the front panel and lists the hardware', () => {

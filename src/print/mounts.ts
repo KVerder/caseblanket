@@ -117,8 +117,22 @@ export interface Bulkhead {
   opening?: { x0: number; y0: number; x1: number; y1: number };
 }
 
+/**
+ * A printed bar that clamps the GPU's bracket plate against the rear wall, screwed into insert
+ * bosses. Bar-local coordinates (mm): x across the bracket width, y along the card's height.
+ */
+export interface BracketClamp {
+  size: [number, number];
+  holes: [number, number][];
+  /** The part of the bar that steps down onto the bracket plate. */
+  press: { x0: number; x1: number; y0: number; y1: number };
+  /** Height of the boss tops above the wall surface. */
+  rise: number;
+}
+
 export interface MountPlan {
   standoffs: Standoff[];
+  clamp?: BracketClamp;
   bulkheads: Bulkhead[];
   /** Spots on a wall kept solid (no perforation), e.g. under a standoff. */
   solid: { wall: Dir; x: number; y: number; r: number }[];
@@ -333,8 +347,17 @@ export function mountPlan(design: Design, cfg: DesignConfig): MountPlan {
     out.hardware.push({ item: '16 mm momentary push button, normally open, with leads', qty: 1, note: 'Wire it to the board’s front-panel PWR_SW pins (polarity doesn’t matter).' });
   } else out.warnings.push('No clear spot on the front panel for a 16 mm power button: drill one where convenient, or use a remote switch.');
 
-  if (design.vents.some((v) => v.kind === 'bracket'))
-    out.warnings.push('GPU bracket: the bracket opening is cut, but no screw point is generated. Mark through the bracket tab onto the panel, drill 4 mm and set an M3 insert, or clamp the bracket with a printed clip.');
+  const bracket = design.vents.find((v) => v.kind === 'bracket');
+  if (bracket) {
+    const clamp = bracketClamp(design, bracket, inWall, wall);
+    if (clamp) {
+      out.clamp = clamp.clamp;
+      out.standoffs.push(...clamp.bosses);
+      for (const b of clamp.bosses) out.solid.push({ wall: 1, x: b.top[1], y: b.top[2], r: INSERT.bossD / 2 + 2 });
+      out.hardware.push({ item: 'M3 brass heat-set insert (GPU bracket clamp)', qty: 2, note: 'In the two bosses beside the bracket opening.' });
+      out.hardware.push({ item: 'M3 × 8 mm screw (GPU bracket clamp)', qty: 2, note: 'Through gpu-bracket-clamp.stl into the bosses; the bar presses the bracket plate flat against the panel near its top.' });
+    } else out.warnings.push('GPU bracket: no room for the clamp bosses beside the bracket opening. Hold the bracket with its own screw: mark through the tab, drill 4 mm and set an M3 insert.');
+  }
   if (fanScrews === 0 && !design.parts.some((p) => p.kind === 'rad-cpu' || p.kind === 'rad-gpu')) {
     // Nothing to add: parts' own fans are fixed to their parts.
   }
@@ -390,6 +413,78 @@ function findSpot(design: Design, F: (p: Vec3) => number, wallT: number, wall: D
       if (!best || y > best.score) best = { x, y, score: y };
     }
   return best;
+}
+
+/**
+ * Clamp for the GPU bracket: bosses on the rear wall 20 mm in from the bracket's tab end, one each
+ * side of the opening when there is room both sides, else two side by side on the open side with
+ * the bar reaching across the plate.
+ */
+function bracketClamp(design: Design, v: Design['vents'][number], inWall: (p: Vec3) => boolean, wallT: number) {
+  const gpu = design.parts.find((p) => p.kind === 'gpu');
+  if (!gpu) return null;
+  // Rear wall (−u): wall coordinates x = v (axis 1), y = t (axis 2). The tab is at the card's top
+  // edge (its height axis, away from the PCIe fingers).
+  const ah = axisOf(gpu.frame.d[1]);
+  const sh = signOf(gpu.frame.d[1]);
+  if (ah === 0) return null;
+  const hK = ah === 1 ? 0 : 1; // wall coordinate index along the card height
+  const wK = 1 - hK;
+  const r = v.rect;
+  const lo = [r.x0, r.y0];
+  const hi = [r.x1, r.y1];
+  const lim = [design.interior[1], design.interior[2]];
+  const along = sh > 0 ? hi[hK] - 20 : lo[hK] + 20;
+  const R = INSERT.bossD / 2;
+  const gap = R + 4;
+  const RISE = INSERT.length + 1.5;
+  const boss = (w: number, h: number): Standoff | null => {
+    const c = [0, 0];
+    c[wK] = w;
+    c[hK] = h;
+    if (c[0] < R + 1 || c[0] > lim[0] - R - 1 || c[1] < R + 1 || c[1] > lim[1] - R - 1) return null;
+    let u = 10;
+    let hit = false;
+    for (let k = 0; k < 120; k++, u -= 0.25)
+      if (inWall([u, c[0], c[1]])) {
+        hit = true;
+        break;
+      }
+    if (!hit) return null;
+    const top: Vec3 = [u + RISE, c[0], c[1]];
+    const base: Vec3 = [u - wallT * 0.6, c[0], c[1]];
+    if (design.parts.some((p) => p !== gpu && p.body.min[0] < top[0] && p.body.max[0] > base[0] && p.body.min[1] < c[0] + R && p.body.max[1] > c[0] - R && p.body.min[2] < c[1] + R && p.body.max[2] > c[1] - R)) return null;
+    return { label: 'GPU bracket clamp boss', top, base, axis: 0, length: top[0] - base[0] };
+  };
+  const span = hi[wK] - lo[wK];
+  const a = boss(lo[wK] - gap, along);
+  const b = boss(hi[wK] + gap, along);
+  if (a && b) {
+    const L = span + 2 * gap + 10;
+    return {
+      bosses: [a, b],
+      clamp: { size: [L, 10] as [number, number], holes: [[5, 5], [L - 5, 5]] as [number, number][], press: { x0: 5 + gap - 1, x1: L - 5 - gap + 1, y0: 0, y1: 10 }, rise: RISE },
+    };
+  }
+  // One side only: two bosses 14 mm apart along the height, the bar reaching across the plate.
+  for (const side of [1, -1]) {
+    const w = side > 0 ? hi[wK] + gap : lo[wK] - gap;
+    const pair = [boss(w, along - 7), boss(w, along + 7)];
+    if (!pair[0] || !pair[1]) continue;
+    const L = span + gap + 6;
+    // Bar-local x runs from the far edge of the plate to past the screws (mirrored when the open side is low).
+    const hx = side > 0 ? L - 5 : 5;
+    return {
+      bosses: pair as Standoff[],
+      clamp: {
+        size: [L, 24] as [number, number],
+        holes: [[hx, 5], [hx, 19]] as [number, number][],
+        press: side > 0 ? { x0: 0, x1: span + 1, y0: 0, y1: 24 } : { x0: L - span - 1, x1: L, y0: 0, y1: 24 },
+        rise: RISE,
+      },
+    };
+  }
+  return null;
 }
 
 /**

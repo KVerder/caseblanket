@@ -232,15 +232,16 @@ export function fitTestPieces(design: Design, cfg: DesignConfig, plan: MountPlan
   const plateSdf = (lo: Vec3, hi: Vec3) => (p: Vec3) => boxSdf(p, { min: lo, max: hi });
   const flat = (sdf: (p: Vec3) => number, lo: Vec3, hi: Vec3, cell = 0.5) => meshPiece(sdf, { min: lo, max: hi }, cell);
   // Board: plate under the standoffs, bosses 8 mm tall with insert holes.
-  if (plan.standoffs.length) {
-    const xs = plan.standoffs.map((st) => st.top[0]);
-    const ys = plan.standoffs.map((st) => st.top[1]);
+  const boardStandoffs = plan.standoffs.filter((st) => st.label.startsWith('standoff'));
+  if (boardStandoffs.length) {
+    const xs = boardStandoffs.map((st) => st.top[0]);
+    const ys = boardStandoffs.map((st) => st.top[1]);
     const x0 = Math.min(...xs) - 10;
     const y0 = Math.min(...ys) - 10;
     const lo: Vec3 = [0, 0, 0];
     const hi: Vec3 = [Math.max(...xs) - x0 + 10, Math.max(...ys) - y0 + 10, T];
     // Lighten the plate: keep a frame and the corners around each boss.
-    const holesAt = plan.standoffs.map((st) => [st.top[0] - x0, st.top[1] - y0] as [number, number]);
+    const holesAt = boardStandoffs.map((st) => [st.top[0] - x0, st.top[1] - y0] as [number, number]);
     const sdf = (p: Vec3) => {
       let d = plateSdf(lo, hi)(p);
       const inner = -boxSdf(p, { min: [12, 12, -1], max: [hi[0] - 12, hi[1] - 12, T + 1] });
@@ -266,6 +267,21 @@ export function fitTestPieces(design: Design, cfg: DesignConfig, plan: MountPlan
       return d;
     };
     out.push({ name: `fit-fan-${size}`, box: { min: [0, 0, 0], max: [W, W, 2.4] }, mesh: flat(sdf, [0, 0, 0], [W, W, 2.4]) });
+  }
+  // GPU bracket clamp: a bar on the bosses that steps down onto the bracket plate.
+  if (plan.clamp) {
+    const c = plan.clamp;
+    const [L, Wb] = c.size;
+    const top = 3;
+    const plate = 1; // bracket plate thickness (typical ~0.9 mm) under the pressing step
+    const sdf = (p: Vec3) => {
+      // z = 0 at the panel; the bar sits on the boss tops (z = rise); the press reaches the plate.
+      let d = boxSdf(p, { min: [0, 0, c.rise], max: [L, Wb, c.rise + top] });
+      d = Math.min(d, boxSdf(p, { min: [c.press.x0, c.press.y0, plate], max: [c.press.x1, c.press.y1, c.rise + top] }));
+      for (const [hx, hy] of c.holes) d = Math.max(d, 1.7 - Math.hypot(p[0] - hx, p[1] - hy));
+      return d;
+    };
+    out.push({ name: 'gpu-bracket-clamp', box: { min: [0, 0, 0], max: [L, Wb, c.rise + top] }, mesh: flat(sdf, [0, 0, plate], [L, Wb, c.rise + top]) });
   }
   // PSU face: holes, the opening, and a notch on the fan side's edge.
   const ph = psuHoles(cfg.parts.psu);
@@ -298,7 +314,7 @@ export function buildGuide(plan: MountPlan, fits: PrintPiece[]): string[] {
     '2. Print the pieces. Standoffs are printed on the bottom panel with their insert holes; screw holes, the PSU opening, the power button and (if needed) the IEC socket cut-out are cut through.',
     '3. Glue the pieces; let it cure.',
     '4. Heat-set the M3 inserts into the standoffs (soldering iron at the filament’s print temperature, press straight down, let cool).',
-    '5. Fit the PSU (screws through its plate or the panel), then the radiator(s) through the panel and fans, then the motherboard (CPU, cooler and RAM already on it), then the graphics card.',
+    '5. Fit the PSU (screws through its plate or the panel), then the radiator(s) through the panel and fans, then the motherboard (CPU, cooler and RAM already on it), then the graphics card; screw gpu-bracket-clamp.stl over its bracket plate.',
     '6. Wire the power button to the board’s PWR_SW pins; mains through the PSU inlet or the IEC socket. Earth: tie one standoff to PSU ground.',
     '',
     'Hardware:',
