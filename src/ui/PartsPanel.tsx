@@ -112,6 +112,19 @@ export function PartsPanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Des
         </div>
         <SourceNote source={gpu.source} />
         <Segmented
+          label="Mounting"
+          value={cfg.prefs.gpuMount}
+          options={[
+            { value: 'slot', label: 'In the board slot', title: 'Card sits directly in the motherboard x16 slot, perpendicular to the board' },
+            { value: 'riser', label: 'Riser cable', title: 'Card connects through a PCIe riser, so it can lie flat or sit behind the board' },
+            { value: 'any', label: 'Try both' },
+          ]}
+          onChange={(v) => up((d) => void (d.prefs.gpuMount = v))}
+        />
+        {cfg.prefs.gpuMount !== 'slot' && (
+          <NumberField id="gpu-riser" label="Riser cable length" unit="mm" value={cfg.prefs.riserLength} min={50} max={600} step={10} onChange={(v) => up((d) => void (d.prefs.riserLength = v))} />
+        )}
+        <Segmented
           label="Cooling"
           value={gpu.cooling}
           options={[

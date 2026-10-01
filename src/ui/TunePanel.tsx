@@ -156,13 +156,26 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
       </Section>
 
       <Section title="Layouts to try">
+        <Segmented
+          label="Graphics card mounting"
+          value={p.gpuMount}
+          options={[
+            { value: 'slot', label: 'Board slot' },
+            { value: 'riser', label: 'Riser' },
+            { value: 'any', label: 'Try both' },
+          ]}
+          onChange={(v) => set('gpuMount', v)}
+        />
         <div className="chips">
-          {TOPO.map((t) => (
-            <label key={t.id} className={`chip${p.topologies[t.id] ? ' on' : ''}`} htmlFor={`topo-${t.id}`} title={t.hint}>
+          {TOPO.map((t) => {
+            const usable = p.gpuMount === 'any' || (p.gpuMount === 'slot') === t.id.startsWith('direct');
+            return (
+            <label key={t.id} className={`chip${p.topologies[t.id] && usable ? ' on' : ''}${usable ? '' : ' off'}`} htmlFor={`topo-${t.id}`} title={usable ? t.hint : `Needs the graphics card ${t.id.startsWith('direct') ? 'in the board slot' : 'on a riser'}`}>
               <input
                 id={`topo-${t.id}`}
                 type="checkbox"
-                checked={p.topologies[t.id]}
+                disabled={!usable}
+                checked={p.topologies[t.id] && usable}
                 onChange={(e) =>
                   setCfg(
                     produce(cfg, (d) => {
@@ -174,11 +187,14 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
               />
               {t.label}
             </label>
-          ))}
+            );
+          })}
         </div>
         <Toggle id="psu-back" label="PSU power socket on the back panel" checked={p.psuInletAtBack} onChange={(v) => set('psuInletAtBack', v)} hint="Off lets the PSU sit anywhere, with an internal extension cable to the back" />
         <Grid>
-          <NumberField id="riser" label="Riser cable" unit="mm" value={p.riserLength} min={50} max={600} step={10} onChange={(v) => set('riserLength', v)} />
+          {p.gpuMount !== 'slot' && (
+            <NumberField id="riser" label="Riser cable" unit="mm" value={p.riserLength} min={50} max={600} step={10} onChange={(v) => set('riserLength', v)} />
+          )}
           <NumberField id="tol" label="Clearance" unit="mm" value={p.tolerance} min={0} max={10} step={0.5} onChange={(v) => set('tolerance', v)} hint="Gap kept between any two parts" />
         </Grid>
       </Section>

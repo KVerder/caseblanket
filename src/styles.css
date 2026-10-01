@@ -945,6 +945,11 @@ select {
   width: 1px;
   height: 1px;
 }
+.chip.off {
+  opacity: 0.45;
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
 .chip.on {
   background: var(--accent-soft);
   border-color: var(--accent);

@@ -146,6 +146,7 @@ export interface PartsConfig {
   extras: ExtraItem[];
 }
 
+export type GpuMount = 'any' | 'riser' | 'slot';
 export type TopologyId = 'flat' | 'sandwich' | 'direct' | 'direct-stack';
 export type Orientation = 'tower' | 'console';
 export type EdgeStyle = 'round' | 'chamfer';
@@ -180,6 +181,8 @@ export interface Preferences {
   orientation: Orientation;
   topologies: Record<TopologyId, boolean>;
   riserLength: number;
+  /** How the graphics card connects: on a riser cable, straight in the board's slot, or let the solver try both. */
+  gpuMount: GpuMount;
   /** Keep the PSU's AC inlet on the back panel instead of using an internal extension cable. */
   psuInletAtBack: boolean;
   /** Extra space kept around every part. */

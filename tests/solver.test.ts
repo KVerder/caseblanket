@@ -95,3 +95,27 @@ describe('solver', () => {
     expect(d.checks.some((c) => c.text.startsWith('PSU AC inlet'))).toBe(false);
   });
 });
+
+describe('GPU mounting', () => {
+  const mounted = (mount: 'slot' | 'riser') => {
+    const c = defaultConfig();
+    c.prefs.gpuMount = mount;
+    return solve(c, { beamWidth: 16 }).designs;
+  };
+
+  it('puts the card in the board slot when asked', () => {
+    const ds = mounted('slot');
+    expect(ds.length).toBeGreaterThan(0);
+    for (const d of ds) {
+      expect(d.topology.startsWith('direct')).toBe(true);
+      expect(d.checks.some((c) => c.text.startsWith('Riser'))).toBe(false);
+      const gpu = d.parts.find((p) => p.kind === 'gpu')!;
+      // Plugged in: the card's height runs away from the board (+t), not along it.
+      expect(gpu.frame.d[1]).toBe(4);
+    }
+  });
+
+  it('uses only riser layouts when asked', () => {
+    for (const d of mounted('riser')) expect(d.topology.startsWith('direct')).toBe(false);
+  });
+});

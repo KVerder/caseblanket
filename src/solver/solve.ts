@@ -24,6 +24,15 @@ export function solverLimits(cfg: DesignConfig): [number, number, number] {
   return p.orientation === 'tower' ? [p.maxDepth, p.maxHeight, p.maxWidth] : [p.maxDepth, p.maxWidth, p.maxHeight];
 }
 
+/** Layout families to try: the user's ticked families, narrowed by how the GPU is mounted. */
+export function activeTopologies(cfg: DesignConfig): TopologyId[] {
+  const mount = cfg.prefs.gpuMount ?? 'any';
+  const fits = (t: TopologyId) => mount === 'any' || (mount === 'slot') === isDirect(t);
+  const ticked = ALL_TOPOLOGIES.filter((t) => cfg.prefs.topologies[t] && fits(t));
+  // If the ticked families all need the other mount, fall back to every family that fits the mount.
+  return ticked.length ? ticked : ALL_TOPOLOGIES.filter(fits);
+}
+
 export function activeProfiles(cfg: DesignConfig): Profile[] {
   const { cooler, gpu } = cfg.parts;
   const has120Rad = [cooler.kind === 'aio' ? cooler.radiator : undefined, gpu.cooling === 'aio' ? gpu.radiator : undefined].some(
@@ -62,7 +71,7 @@ export function solve(cfg: DesignConfig, opts: SolveOptions = {}): SolveResult {
   const beamWidth = opts.beamWidth ?? 40;
   const perRun = opts.evaluatePerRun ?? 10;
   const maxResults = opts.maxResults ?? 8;
-  const topologies = ALL_TOPOLOGIES.filter((t) => cfg.prefs.topologies[t]);
+  const topologies = activeTopologies(cfg);
   const profiles = activeProfiles(cfg);
   const limits = solverLimits(cfg);
   const total = topologies.length * profiles.length;

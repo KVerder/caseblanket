@@ -109,6 +109,12 @@ for (const [name, vp, opts] of [
   const eyebrow = await page.locator('.eyebrow').first().innerText();
   check(eyebrow.length > 0, `design updates after changing the GPU (${eyebrow})`);
   await page.screenshot({ path: `${out}/controls-4090.png` });
+  await page.getByRole('radio', { name: 'In the board slot' }).click();
+  await page.waitForTimeout(2500);
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 20000 });
+  const slotEyebrow = await page.locator('.eyebrow').first().innerText();
+  check(/direct slot/i.test(slotEyebrow), `GPU "in the board slot" gives a direct-slot design (${slotEyebrow})`);
+  await page.screenshot({ path: `${out}/gpu-in-slot.png` });
   await ctx.close();
 }
 
