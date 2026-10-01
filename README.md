@@ -53,6 +53,7 @@ npm install
 npm run dev          # http://localhost:5173
 npm test             # unit tests (geometry, packing, airflow, exports, lookups)
 npm run build        # static site in dist/
+npm run build:single # one self-contained file: dist-single/caseblanket.html (opens from disk)
 npm run preview &    # serve dist/ on :4173, then:
 npm run e2e          # renders 4 screen sizes, drives touch gestures and controls, writes e2e/out/*.png
 ```

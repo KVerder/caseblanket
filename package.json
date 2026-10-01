@@ -11,7 +11,8 @@
     "preview": "vite preview --port 4173 --strictPort",
     "test": "vitest run",
     "typecheck": "tsc -p .",
-    "e2e": "node e2e/run.mjs e2e/out"
+    "e2e": "node e2e/run.mjs e2e/out",
+    "build:single": "tsc -p . && vite build --mode single --outDir dist-single && node scripts/single-html.mjs dist-single"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",
