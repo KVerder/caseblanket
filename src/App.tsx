@@ -15,6 +15,7 @@ import { PartsPanel } from './ui/PartsPanel';
 import { PrintDialog } from './ui/PrintDialog';
 import { SimPanel } from './ui/SimPanel';
 import { Explorer } from './ui/Explorer';
+import { PrintPlan } from './ui/PrintPlan';
 import { AirflowTable, Candidates, Chambers, Checks, Noise, Summary, Temperatures } from './ui/ResultsPanel';
 import { TunePanel } from './ui/TunePanel';
 import { ViewerPanel } from './ui/ViewerPanel';
@@ -208,6 +209,7 @@ export default function App() {
       <Temperatures d={design} cfg={cfg} />
       <Noise d={design} cfg={cfg} />
       <Chambers d={design} cfg={cfg} />
+      <PrintPlan design={design} cfg={cfg} />
       <AirflowTable d={design} cfg={cfg} />
       <SimPanel design={design} cfg={cfg} viewer={() => viewerRef.current} />
       <Checks d={design} />

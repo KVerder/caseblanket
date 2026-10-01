@@ -466,6 +466,8 @@ export interface FlowInput {
   targetRiseC: number;
   radEffectiveness: number;
   caseComponents?: ComponentSpec[];
+  /** Leakage on top of the seams, m² (glued joints of a printed shell). */
+  extraLeakArea?: number;
 }
 
 /** One-zone case: every 'case' endpoint is the same well-mixed air. */
@@ -477,7 +479,9 @@ export function solveFlow(input: FlowInput): FlowResult {
     g.component || g.heatW <= 0 ? g : { ...g, component: { id: g.id, label: g.label, limitC: lim, selfRiseK: 0, air: 'exit' as const, heatW: g.heatW } },
   );
   return solveNetwork({
-    zones: [{ id: 'case', label: 'Case', heatW: input.internalHeatW, passiveArea: input.passiveArea, passiveZeta: input.passiveZeta, leakArea: 0.001, components: comps }],
+    zones: [
+      { id: 'case', label: 'Case', heatW: input.internalHeatW, passiveArea: input.passiveArea, passiveZeta: input.passiveZeta, leakArea: 0.001 + (input.extraLeakArea ?? 0), components: comps },
+    ],
     links: [],
     groups,
     ambientC: input.ambientC,

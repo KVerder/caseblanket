@@ -390,12 +390,26 @@ export interface Material {
   label: string;
   densityGcm3: number;
   defaultWall: number;
+  /** 3D-printing filaments only. */
+  print?: {
+    /** Heat-deflection temperature, °C (typical datasheet value; estimate). */
+    hdtC: number;
+    /** UL 94 flame rating of typical grades (estimate). */
+    ul94: 'HB' | 'V-0';
+  };
 }
 
+/** Margin kept between a printed part's air temperature and its heat-deflection temperature, K (estimate). */
+export const PRINT_HDT_MARGIN = 20;
+
 export const MATERIALS: Material[] = [
+  { id: 'petg', label: '3D print — PETG', densityGcm3: 1.27, defaultWall: 2.4, print: { hdtC: 70, ul94: 'HB' } },
+  { id: 'pla', label: '3D print — PLA', densityGcm3: 1.24, defaultWall: 2.4, print: { hdtC: 55, ul94: 'HB' } },
+  { id: 'asa', label: '3D print — ASA', densityGcm3: 1.07, defaultWall: 2.4, print: { hdtC: 95, ul94: 'HB' } },
+  { id: 'pc-fr', label: '3D print — PC (flame-retardant)', densityGcm3: 1.2, defaultWall: 2.4, print: { hdtC: 110, ul94: 'V-0' } },
+  { id: 'pa-cf', label: '3D print — PA-CF', densityGcm3: 1.15, defaultWall: 2.4, print: { hdtC: 140, ul94: 'HB' } },
   { id: 'al5052', label: 'Aluminium 5052', densityGcm3: 2.68, defaultWall: 1.5 },
   { id: 'steel', label: 'Steel (SPCC)', densityGcm3: 7.85, defaultWall: 1.0 },
-  { id: 'petg', label: '3D print — PETG', densityGcm3: 1.27, defaultWall: 2.4 },
   { id: 'acrylic', label: 'Acrylic', densityGcm3: 1.19, defaultWall: 3.0 },
   { id: 'plywood', label: 'Birch plywood', densityGcm3: 0.68, defaultWall: 4.0 },
 ];
@@ -426,8 +440,8 @@ export const DEFAULT_PREFS: Preferences = {
   edgeRadius: 6,
   shell: 'wrap',
   organic: 0.4,
-  wallThickness: 1.5,
-  materialId: 'al5052',
+  wallThickness: 2.4,
+  materialId: 'petg',
   ventStyleId: 'hex',
   dustFilters: false,
   passiveVentCoverage: 0.3,
@@ -449,6 +463,8 @@ export const DEFAULT_PREFS: Preferences = {
   chambers: 'auto',
   noiseMode: 'budget',
   noiseBudgetDb: 30,
+  buildVolume: [250, 250, 250],
+  jointGapMm: 0.1,
   feetHeight: 8,
   spineThickness: 2,
   finish: '#2b2d31',

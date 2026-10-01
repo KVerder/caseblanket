@@ -1,6 +1,8 @@
 import { isWrap } from '../solver/shrinkwrap';
 import { useEffect, useRef, useState } from 'react';
 import type { DesignConfig } from '../model/types';
+import { MATERIALS } from '../model/presets';
+import { DEFAULT_SLICER, type Manifest, type SlicerSettings } from '../print/analysis';
 import { DEFAULT_PRINT, planPieces, type PrintOptions } from '../print/printable';
 import { download } from '../render/export';
 import type { Design } from '../solver/evaluate';
@@ -10,8 +12,11 @@ import { NumberField } from './fields';
 export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: DesignConfig; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const worker = useRef<Worker | null>(null);
-  const [opt, setOpt] = useState<PrintOptions>(DEFAULT_PRINT);
-  const [state, setState] = useState<{ busy: boolean; done: number; total: number; error?: string; result?: string }>({ busy: false, done: 0, total: 0 });
+  const preferred = MATERIALS.find((m) => m.id === cfg.prefs.materialId && m.print)?.id ?? 'petg';
+  const [opt, setOpt] = useState<PrintOptions>({ ...DEFAULT_PRINT, bed: cfg.prefs.buildVolume ?? DEFAULT_PRINT.bed, filament: preferred });
+  const [state, setState] = useState<{ busy: boolean; done: number; total: number; error?: string; result?: string; manifest?: Manifest }>({ busy: false, done: 0, total: 0 });
+  const slicer = opt.slicer ?? DEFAULT_SLICER;
+  const setSlicer = (k: keyof SlicerSettings, v: number) => setOpt((o) => ({ ...o, slicer: { ...(o.slicer ?? DEFAULT_SLICER), [k]: v } }));
   useEffect(() => {
     dialog.current?.showModal();
     return () => worker.current?.terminate();
@@ -25,12 +30,12 @@ export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: Des
     worker.current = w;
     setState({ busy: true, done: 0, total: pieces });
     w.onmessage = (e) => {
-      const d = e.data as { progress?: { done: number; total: number }; zip?: Uint8Array; pieces?: number; error?: string };
+      const d = e.data as { progress?: { done: number; total: number }; zip?: Uint8Array; pieces?: number; manifest?: Manifest; error?: string };
       if (d.progress) setState((s) => ({ ...s, ...d.progress }));
       if (d.zip) {
         const stem = `caseblanket-print-${Math.round(design.world.width)}x${Math.round(design.world.height)}x${Math.round(design.world.depth)}`;
         download(new Blob([d.zip.buffer as ArrayBuffer], { type: 'application/zip' }), `${stem}.zip`);
-        setState({ busy: false, done: 0, total: 0, result: `${d.pieces} pieces, ${(d.zip.length / 1e6).toFixed(0)} MB.` });
+        setState({ busy: false, done: 0, total: 0, result: `${d.pieces} pieces, ${(d.zip.length / 1e6).toFixed(0)} MB.`, manifest: d.manifest });
         w.terminate();
       }
       if (d.error) setState({ busy: false, done: 0, total: 0, error: d.error });
@@ -68,10 +73,33 @@ export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: Des
           <NumberField id="hole-d" label="Vent holes" unit="mm" value={opt.holeDiameter} min={3} max={12} step={0.5} onChange={(v) => setOpt((o) => ({ ...o, holeDiameter: v, holePitch: Math.max(o.holePitch, v + 1.5) }))} />
           <NumberField id="hole-p" label="Hole pitch" unit="mm" value={opt.holePitch} min={opt.holeDiameter + 1.2} max={20} step={0.5} onChange={(v) => setOpt((o) => ({ ...o, holePitch: v }))} />
         </div>
+        <div className="grid g2">
+          <label className="field" htmlFor="filament">
+            <span className="field-label">Preferred filament</span>
+            <select id="filament" value={opt.filament} onChange={(e) => setOpt((o) => ({ ...o, filament: e.target.value }))}>
+              {MATERIALS.filter((m) => m.print).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label.replace('3D print — ', '')} (HDT ≈ {m.print!.hdtC} °C{m.print!.ul94 === 'V-0' ? ', V-0' : ''})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field check" htmlFor="liner">
+            <input id="liner" type="checkbox" checked={!!opt.liner} onChange={(e) => setOpt((o) => ({ ...o, liner: e.target.checked }))} /> Plan a conductive EMI liner
+          </label>
+        </div>
+        <span className="field-label">Slicer assumptions (for mass and time)</span>
+        <div className="grid g4">
+          <NumberField id="sl-layer" label="Layer" unit="mm" value={slicer.layerMm} min={0.08} max={0.4} step={0.02} onChange={(v) => setSlicer('layerMm', v)} />
+          <NumberField id="sl-walls" label="Walls" value={slicer.walls} min={1} max={8} onChange={(v) => setSlicer('walls', v)} />
+          <NumberField id="sl-infill" label="Infill" unit="%" value={Math.round(slicer.infill * 100)} min={0} max={100} onChange={(v) => setSlicer('infill', v / 100)} />
+          <NumberField id="sl-speed" label="Speed" unit="mm/s" value={slicer.speedMmS} min={20} max={500} onChange={(v) => setSlicer('speedMmS', v)} />
+        </div>
         <p className="muted small">
           {pieces} piece{pieces === 1 ? '' : 's'}, cut on straight planes. Wall {design.wall} mm
           {thin ? ' — thin for FDM; choose "3D print — PETG" in Tune → Shape & finish for 2.4 mm walls.' : '.'} Files run to tens of MB.
-          Standoffs and screw bosses are not included.
+          Each piece gets a suggested orientation (least support), a filament for the hottest air it meets, mass and print time; standoff
+          bosses and screw holes are listed, not modelled.
         </p>
         {state.busy && (
           <p className="sim-status" role="status">
@@ -79,6 +107,7 @@ export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: Des
           </p>
         )}
         {state.result && <p className="small">Saved: {state.result}</p>}
+        {state.manifest && <ManifestView m={state.manifest} />}
         {state.error && <p className="error-text">{state.error}</p>}
       </div>
       <div className="catalog-foot">
@@ -87,5 +116,64 @@ export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: Des
         </button>
       </div>
     </dialog>
+  );
+}
+
+function ManifestView({ m }: { m: Manifest }) {
+  return (
+    <div className="manifest">
+      <p className="small">
+        ≈ <b>{Math.round(m.totalMassG)} g</b> of filament, ≈ <b>{(m.totalTimeMin / 60).toFixed(0)} h</b> of printing, {m.totalSupportCm3.toFixed(0)} cm³ of support (estimates).
+      </p>
+      <table className="sim-table">
+        <thead>
+          <tr>
+            <th scope="col">Piece</th>
+            <th scope="col">Print with</th>
+            <th scope="col" className="num">
+              Support
+            </th>
+            <th scope="col" className="num">
+              g
+            </th>
+            <th scope="col" className="num">
+              h
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {m.rows.map((r) => (
+            <tr key={r.name}>
+              <th scope="row">
+                {r.name}
+                <span className="path-sub">
+                  {r.orientation} · air ≤ {Math.round(r.airC)} °C{r.needsV0 ? ' · needs V-0' : ''}
+                </span>
+              </th>
+              <td>{r.filament}</td>
+              <td className="num">{r.supportCm3.toFixed(0)} cm³</td>
+              <td className="num">{Math.round(r.massG)}</td>
+              <td className="num">{(r.timeMin / 60).toFixed(1)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <ul className="checks-list">
+        {m.flags.map((f, i) => (
+          <li key={i} className="check warn">
+            <span className="dot" aria-hidden="true" />
+            <span>{f}</span>
+          </li>
+        ))}
+        {m.inserts.map((x) => (
+          <li key={x.what} className="check info">
+            <span className="dot" aria-hidden="true" />
+            <span>
+              {x.count} × {x.what}: {x.note}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

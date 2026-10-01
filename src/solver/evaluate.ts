@@ -568,6 +568,8 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   }
   if (combos.length === 0) combos.push([]);
   const passiveZeta = perforatedPlateZeta(vs.openRatio) + (prefs.dustFilters ? advanced.dustFilterLossK : 0);
+  // A printed shell is cut into pieces that fit the build volume; its glued joints leak a little.
+  const jointLeak = printJointLeak(interior, wall, MATERIALS.find((m) => m.id === prefs.materialId), prefs.buildVolume, prefs.jointGapMm);
   const effectiveTopology: TopologyId = two && !hasB ? (topology === 'sandwich' ? 'flat' : 'direct') : topology;
   // Enough of the design for the chamber geometry and hose routing, before it is assembled.
   const layoutDesign = { parts, interior, profile, effectiveTopology } as unknown as Design;
@@ -600,7 +602,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
           heatW: Object.entries(net.heatByPart).reduce((sum, [part, w]) => sum + (zoneOfPart(part) === k ? w : 0), 0),
           passiveArea: vents.filter((v) => v.kind === 'passive').reduce((sum, v) => sum + ventAreaIn(v, layoutDesign, c.box), 0) * MM2,
           passiveZeta,
-          leakArea: CASE_LEAK * wallShare(layoutDesign, c.box),
+          leakArea: (CASE_LEAK + jointLeak) * wallShare(layoutDesign, c.box),
           components: net.caseComps.filter((cc) => zoneOfPart(net.compPart[cc.id] ?? 'board') === k),
         })),
         links: layout.links.map((l) => ({ ...l, zeta: 2.5 })),
@@ -618,6 +620,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       targetRiseC: prefs.targetRiseC,
       radEffectiveness: advanced.radEffectiveness,
       caseComponents: net.caseComps,
+      extraLeakArea: jointLeak,
     });
   };
   const loadId: LoadProfileId = prefs.loadProfile ?? 'gaming';
@@ -807,6 +810,24 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   hoseChecks(design, cfg);
   design.invalid = design.checks.some((c) => c.level === 'error');
   return design;
+}
+
+/**
+ * Leak area of a printed shell's glued joints, m²: the shell is cut on planes so each piece fits
+ * the build volume (as the printable export does); each cut runs once around the case.
+ */
+export function printJointLeak(interior: Vec3, wall: number, mat: (typeof MATERIALS)[number] | undefined, bed: [number, number, number] | undefined, gapMm: number | undefined): number {
+  if (!mat?.print || !bed) return 0;
+  const pad = wall + 14;
+  const ext = interior.map((x) => x + 2 * pad);
+  const max = Math.min(...bed) - 8;
+  let seam = 0;
+  for (let a = 0; a < 3; a++) {
+    const cuts = Math.max(1, Math.ceil(ext[a] / max)) - 1;
+    const [b, c] = [0, 1, 2].filter((x) => x !== a);
+    seam += cuts * 2 * (interior[b] + interior[c] + 4 * wall);
+  }
+  return seam * (gapMm ?? 0.1) * 1e-6;
 }
 
 /** AIO hose runs along their routed paths: length against the hose, tightest bend against the kink radius. */

@@ -132,6 +132,26 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
           />
           <NumberField id="wall" label="Wall" unit="mm" value={p.wallThickness} min={0.5} max={8} step={0.1} onChange={(v) => set('wallThickness', v)} />
         </Grid>
+        {MATERIALS.find((m) => m.id === p.materialId)?.print && (
+          <>
+            <span className="field-label">Printer build volume</span>
+            <Grid cols={3}>
+              {(['X', 'Y', 'Z'] as const).map((axis, i) => (
+                <NumberField
+                  key={axis}
+                  id={`bv-${axis}`}
+                  label={axis}
+                  unit="mm"
+                  value={p.buildVolume[i]}
+                  min={100}
+                  max={1000}
+                  onChange={(v) => set('buildVolume', p.buildVolume.map((b, j) => (j === i ? v : b)) as [number, number, number])}
+                />
+              ))}
+            </Grid>
+            <p className="muted small">The shell is cut into pieces that fit; their glued joints count as a small leak in the airflow model.</p>
+          </>
+        )}
         <div className="field">
           <span className="field-label">Finish</span>
           <div className="swatches" role="radiogroup" aria-label="Finish colour">

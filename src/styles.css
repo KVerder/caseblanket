@@ -1724,3 +1724,14 @@ dialog.print .catalog-foot {
   margin: 0.4rem 0;
   width: fit-content;
 }
+.grid.g4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 520px) {
+  .grid.g4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.manifest {
+  margin-top: 0.5rem;
+}

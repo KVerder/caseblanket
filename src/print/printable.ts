@@ -4,6 +4,7 @@ import { axisOf, signOf, wallAxes, type Box, type Vec3 } from '../solver/geometr
 import { meshGrid, shellField, type Grid, type ShellMesh } from '../solver/shrinkwrap';
 import { PARTITION_THICKNESS } from '../solver/chambers';
 import { plateMesh } from '../solver/partitions';
+import { DEFAULT_SLICER, OVERHANG_DEG, type Manifest, type SlicerSettings } from './analysis';
 
 /**
  * Print-ready shell: the wall as a solid (outer surface down to one wall thickness in), with vent
@@ -16,9 +17,14 @@ export interface PrintOptions {
   bed: [number, number, number];
   holeDiameter: number;
   holePitch: number;
+  /** Preferred filament (material id); hotter pieces are moved to a higher-temperature one. */
+  filament?: string;
+  slicer?: SlicerSettings;
+  /** Plan a conductive liner for EMI shielding. */
+  liner?: boolean;
 }
 
-export const DEFAULT_PRINT: PrintOptions = { bed: [256, 256, 256], holeDiameter: 5, holePitch: 7 };
+export const DEFAULT_PRINT: PrintOptions = { bed: [250, 250, 250], holeDiameter: 5, holePitch: 7, filament: 'petg', slicer: DEFAULT_SLICER, liner: false };
 
 export interface PrintPiece {
   name: string;
@@ -275,10 +281,24 @@ export function zip(files: { name: string; data: Uint8Array }[]): Uint8Array {
   return out;
 }
 
-export function printReadme(design: Design, opt: PrintOptions, pieces: PrintPiece[]): string {
+export function printReadme(design: Design, opt: PrintOptions, pieces: PrintPiece[], manifest?: Manifest): string {
+  const s = opt.slicer ?? DEFAULT_SLICER;
   const lines = [
     'caseblanket — 3D-printable shell',
     '',
+    ...(manifest
+      ? [
+          `Plan (manifest.csv has every piece): ${manifest.rows.length} pieces, ≈ ${Math.round(manifest.totalMassG)} g of filament, ≈ ${(manifest.totalTimeMin / 60).toFixed(0)} h of printing, ${manifest.totalSupportCm3.toFixed(0)} cm³ of support in the suggested orientations.`,
+          `Estimates assume ${s.layerMm} mm layers, ${s.walls} walls of ${s.lineMm} mm, ${Math.round(s.infill * 100)} % infill, ${s.speedMmS} mm/s; overhangs over ${OVERHANG_DEG}° from vertical need support.`,
+          'Filament per piece follows the hottest air it meets at full load, kept 20 K under the filament’s heat-deflection temperature (typical values; check your filament’s datasheet).',
+          '',
+          ...manifest.flags.map((f) => `! ${f}`),
+          '',
+          'Threaded inserts and grounding:',
+          ...manifest.inserts.map((i) => `  ${i.count} × ${i.what}: ${i.note}`),
+          '',
+        ]
+      : []),
     `Wall ${design.wall} mm (set the material and wall thickness in Tune → Shape & finish; 2.4 mm or more suits FDM printing).`,
     `Vents: ${opt.holeDiameter} mm holes on a ${opt.holePitch} mm hex pitch. I/O and GPU bracket openings are cut through.`,
     `Pieces are cut on straight planes to fit a ${opt.bed.join(' × ')} mm bed; glue or bridge them along the cut faces.`,
@@ -295,7 +315,7 @@ export function printReadme(design: Design, opt: PrintOptions, pieces: PrintPiec
           `partition-*.stl are the ${PARTITION_THICKNESS} mm internal walls that split the case into ${design.chamber.chambers.length} air chambers. Glue them into the shell; the round holes take hoses and cables (fit grommets or foam to seal them).`,
         ]
       : []),
-    'Not included: standoffs, screw bosses, PSU and fan mounting holes — add them in your CAD tool.',
+    'Not included as geometry: standoff bosses, screw holes, alignment pins and fan mounting holes; add them in your CAD tool (the insert list above says where they go). Joints: glue the cut faces and seal them; the airflow model counts a 0.1 mm leak along every joint.',
   ];
   return lines.join('\n');
 }

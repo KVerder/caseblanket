@@ -234,6 +234,10 @@ export interface Preferences {
   noiseMode: 'budget' | 'quiet';
   /** Noise budget, dB(A) at 1 m (free-field estimate). */
   noiseBudgetDb: number;
+  /** Printer build volume, mm (printed shells are cut into pieces that fit it). */
+  buildVolume: [number, number, number];
+  /** Effective leak gap along a glued joint between printed pieces, mm (estimate). */
+  jointGapMm: number;
   /** Load the design is rated at: typical gaming or sustained full load. */
   loadProfile: LoadProfileId;
   /** Allowed air temperature rise leaving any heat exchanger. */
