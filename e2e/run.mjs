@@ -74,15 +74,21 @@ for (const [name, vp, opts] of [
   const panned = Math.hypot(...afterPan.target.map((v, i) => v - afterPinch.target[i]));
   check(panned > 5, `two-finger drag pans (target moved ${panned.toFixed(0)} mm)`);
 
-  // Software GL in CI can take longer than a finger between taps; test the gesture, not the machine.
-  await page.evaluate(() => (window.__caseblanketViewer.doubleTapWindow = 1500));
+  // Software GL in CI can take longer than a finger between taps (each CDP touch waits for a frame);
+  // test the gesture, not the machine: a wide window, then wait for the view to arrive.
+  await page.evaluate(() => (window.__caseblanketViewer.doubleTapWindow = 10000));
+  const tapStart = Date.now();
   for (let k = 0; k < 2; k++) {
     await touch('touchStart', [[cx, cy]]);
     await touch('touchEnd', []);
   }
-  await page.waitForTimeout(1200);
-  const afterReset = await cam();
-  check(Math.hypot(...afterReset.target) < 1, `double-tap resets the view (target ${afterReset.target.map((v) => v.toFixed(1)).join(', ')})`);
+  const tapMs = Date.now() - tapStart;
+  let afterReset = await cam();
+  for (let waited = 0; waited < 5000 && Math.hypot(...afterReset.target) >= 1; waited += 250) {
+    await page.waitForTimeout(250);
+    afterReset = await cam();
+  }
+  check(Math.hypot(...afterReset.target) < 1, `double-tap resets the view (target ${afterReset.target.map((v) => v.toFixed(1)).join(', ')}; taps took ${tapMs} ms)`);
   await page.screenshot({ path: `${out}/gestures.png` });
   await ctx.close();
 }
@@ -150,7 +156,7 @@ for (const [name, vp, opts] of [
   check(active, 'simulated airflow particles animate in the 3D view');
   await page.screenshot({ path: `${out}/sim.png` });
   await page.getByRole('button', { name: 'Stop' }).click().catch(() => {});
-  await page.getByRole('button', { name: 'Export' }).click();
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
   await page.getByRole('menuitem', { name: /3D-printable pieces/ }).click();
   const dl = page.waitForEvent('download', { timeout: 120000 });
   await page.getByRole('button', { name: 'Build and download' }).click();

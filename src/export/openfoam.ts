@@ -626,7 +626,6 @@ functions
         type            scalarTransport;
         libs            (solverFunctionObjects);
         field           s;
-        schemesField    T;
         D               2e-5;
         fvOptions
         {
