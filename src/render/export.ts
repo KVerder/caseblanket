@@ -3,6 +3,7 @@ import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { DesignConfig } from '../model/types';
 import type { Design } from '../solver/evaluate';
+import { meshShell, type ShellMesh } from '../solver/shrinkwrap';
 import { WorldMap } from './mapping';
 import { shellGeometry } from './Viewer';
 
@@ -34,6 +35,7 @@ function strip(g: THREE.BufferGeometry): THREE.BufferGeometry {
  * Vents and openings are not cut — the SVG panel drawings carry those.
  */
 export function shellSTL(design: Design, cfg: DesignConfig): Blob {
+  if (cfg.prefs.organic > 0) return organicSTL(design, cfg);
   const map = new WorldMap(cfg.prefs.orientation, design.interior);
   const ext = map.size(design.exterior);
   const inn = map.size(design.interior);
@@ -54,4 +56,28 @@ export function download(blob: Blob, filename: string) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function meshToGeometry(m: ShellMesh, map: WorldMap, flip: boolean): THREE.BufferGeometry {
+  const pos = new Float32Array(m.positions.length);
+  for (let i = 0; i < pos.length; i += 3) {
+    const p = map.point([m.positions[i], m.positions[i + 1], m.positions[i + 2]]);
+    pos.set([p.x, p.y, p.z], i);
+  }
+  const idx = Uint32Array.from(m.indices);
+  if (flip) for (let t = 0; t < idx.length; t += 3) [idx[t + 1], idx[t + 2]] = [idx[t + 2], idx[t + 1]];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  return g.toNonIndexed();
+}
+
+/** Shrinkwrapped shell: outer surface plus the inward-facing surface one wall in. */
+function organicSTL(design: Design, cfg: DesignConfig): Blob {
+  const map = new WorldMap(cfg.prefs.orientation, design.interior);
+  const outer = meshShell(design, cfg, cfg.prefs.organic, 0);
+  const inner = meshShell(design, cfg, cfg.prefs.organic, -design.wall);
+  const merged = mergeGeometries([meshToGeometry(outer, map, false), meshToGeometry(inner, map, true)]);
+  const data = new STLExporter().parse(new THREE.Mesh(merged), { binary: true }) as DataView;
+  return new Blob([data.buffer as ArrayBuffer], { type: 'model/stl' });
 }

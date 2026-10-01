@@ -18,6 +18,7 @@ import {
 } from './geometry';
 import { allowedFaceDirs, boardStack, isTwoLayer, type ItemDef, type ItemKind, type LayerId, type Profile } from './items';
 import { interiorThickness, type PackNode } from './pack';
+import type { WrapMetrics } from './shrinkwrap';
 
 export interface PlacedPart {
   id: string;
@@ -81,6 +82,8 @@ export interface Design {
   compactCost: number;
   /** Why this design is in the shortlist ("Best match", "Thinnest", …). */
   tags: string[];
+  /** Outer size of the shrinkwrapped shell, when the shell is organic. */
+  wrap?: WrapMetrics;
 }
 
 const EPS = 0.5;

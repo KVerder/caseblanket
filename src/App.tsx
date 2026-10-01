@@ -4,8 +4,10 @@ import type { DesignConfig } from './model/types';
 import { download, shellSTL } from './render/export';
 import { panelsSVG } from './render/svgPanels';
 import type { CaseViewer } from './render/Viewer';
+import type { Design } from './solver/evaluate';
 import type { SolveResult } from './solver/solve';
 import { encodeShare, initialConfig, IS_ARTIFACT, storeConfig } from './state/config';
+import { MeshClient, type ShellResult } from './state/meshClient';
 import { SolverClient } from './state/solverClient';
 import { ModelPanel } from './ui/ModelPanel';
 import { PartsPanel } from './ui/PartsPanel';
@@ -120,6 +122,31 @@ export default function App() {
 
   const design = useMemo(() => result?.designs.find((d) => d.id === selected) ?? result?.designs[0] ?? null, [result, selected]);
 
+  // Shrinkwrap the selected design's shell off the main thread.
+  const meshClient = useRef<MeshClient | null>(null);
+  const [shell, setShell] = useState<{ for: Design; result: ShellResult } | null>(null);
+  const [shaping, setShaping] = useState(false);
+  const organic = cfg.prefs.organic;
+  useEffect(() => {
+    if (!design || organic <= 0) {
+      setShaping(false);
+      return;
+    }
+    meshClient.current ??= new MeshClient();
+    setShaping(true);
+    meshClient.current
+      .run(design, cfg, organic)
+      .then((r) => {
+        setShell({ for: design, result: r });
+        setShaping(false);
+      })
+      .catch((e: Error) => {
+        if (e.message !== 'superseded') setShaping(false);
+      });
+    // cfg is captured with the design it produced; re-mesh only when the design or shape changes.
+  }, [design, organic]);
+  useEffect(() => () => meshClient.current?.dispose(), []);
+
   const share = async () => {
     const url = `${location.origin}${location.pathname}#${encodeShare(cfg)}`;
     try {
@@ -146,6 +173,7 @@ export default function App() {
     if (!design) return;
     const stem = `caseblanket-${Math.round(design.world.width)}x${Math.round(design.world.height)}x${Math.round(design.world.depth)}`;
     if (kind === 'stl') download(shellSTL(design, cfg), `${stem}-shell.stl`);
+    if (kind === 'svg' && cfg.prefs.organic > 0) return;
     if (kind === 'svg') download(new Blob([panelsSVG(design, cfg)], { type: 'image/svg+xml' }), `${stem}-panels.svg`);
     if (kind === 'json') download(new Blob([JSON.stringify({ config: cfg, design }, null, 2)], { type: 'application/json' }), `${stem}.json`);
     if (kind === 'png' && viewerRef.current) {
@@ -207,8 +235,8 @@ export default function App() {
                     <button role="menuitem" type="button" onClick={() => doExport('stl')}>
                       Shell for 3D printing <span>STL</span>
                     </button>
-                    <button role="menuitem" type="button" onClick={() => doExport('svg')}>
-                      Flat panel drawings <span>SVG</span>
+                    <button role="menuitem" type="button" disabled={cfg.prefs.organic > 0} title={cfg.prefs.organic > 0 ? 'Flat panels exist only for the straight box (Shape slider at 0)' : undefined} onClick={() => doExport('svg')}>
+                      Flat panel drawings <span>{cfg.prefs.organic > 0 ? 'box only' : 'SVG'}</span>
                     </button>
                     <button role="menuitem" type="button" onClick={() => doExport('png')}>
                       Picture of this view <span>PNG</span>
@@ -237,7 +265,17 @@ export default function App() {
 
       <main className="workbench">
         <section className="stage" aria-label="Case preview">
-          <ViewerPanel design={design} cfg={cfg} dark={dark} solving={solving} progress={progress} onViewer={onViewer} />
+          <ViewerPanel
+            design={design}
+            cfg={cfg}
+            dark={dark}
+            solving={solving}
+            progress={progress}
+            shell={shell?.result ?? null}
+            shellFor={shell?.for ?? null}
+            shaping={shaping}
+            onViewer={onViewer}
+          />
         </section>
 
         <section className="controls" aria-label="Inputs">

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { DesignConfig } from '../model/types';
 import { CaseViewer, DEFAULT_VIEW, type ViewOptions, type ViewPreset } from '../render/Viewer';
 import type { Design } from '../solver/evaluate';
+import type { ShellResult } from '../state/meshClient';
 
 const HINT_KEY = 'caseblanket:hint-dismissed';
 
@@ -19,6 +20,10 @@ export function ViewerPanel(props: {
   dark: boolean;
   solving: boolean;
   progress: number;
+  /** Shrinkwrapped shell for `shellFor` (a design id), when the shell is organic. */
+  shell: ShellResult | null;
+  shellFor: Design | null;
+  shaping: boolean;
   onViewer?: (v: CaseViewer | null) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -57,9 +62,25 @@ export function ViewerPanel(props: {
     // Refit the camera only when the case outline changes a lot or the orientation flips.
     const e = props.design.exterior;
     const key = `${props.cfg.prefs.orientation}|${Math.round(Math.max(...e) / 60)}`;
-    viewer.current.setDesign(props.design, props.cfg, key !== lastKey.current);
+    const organic = props.cfg.prefs.organic > 0;
+    viewer.current.setDesign(props.design, props.cfg, key !== lastKey.current, organic);
     lastKey.current = key;
+    shownShell.current = null;
   }, [props.design, props.cfg]);
+
+  const shownShell = useRef<ShellResult | null>(null);
+  useEffect(() => {
+    if (!viewer.current || !props.design) return;
+    if (props.cfg.prefs.organic <= 0) {
+      if (shownShell.current) viewer.current.setShell(null);
+      shownShell.current = null;
+      return;
+    }
+    if (props.shell && props.shellFor === props.design && shownShell.current !== props.shell) {
+      viewer.current.setShell(props.shell);
+      shownShell.current = props.shell;
+    }
+  }, [props.shell, props.shellFor, props.design, props.cfg]);
 
   useEffect(() => {
     viewer.current?.setOptions(opts);
@@ -86,6 +107,12 @@ export function ViewerPanel(props: {
     <div className="viewer" aria-busy={props.solving}>
       <div ref={host} className="viewer-host" onPointerDown={() => !hintGone && dismissHint()} />
       {error && <p className="viewer-error">{error}</p>}
+      {!props.solving && props.shaping && (
+        <div className="solving" role="status">
+          <span className="spinner" aria-hidden="true" />
+          Shaping the shell…
+        </div>
+      )}
       {props.solving && (
         <div className="solving" role="status">
           <span className="spinner" aria-hidden="true" />

@@ -2,6 +2,7 @@ import type { DesignConfig, TopologyId } from '../model/types';
 import { evaluate, type Design } from './evaluate';
 import { buildItems, isDirect, isTwoLayer, PROFILES, type Profile } from './items';
 import { pack } from './pack';
+import { wrapMetrics } from './shrinkwrap';
 
 export interface SolveOptions {
   beamWidth?: number;
@@ -9,6 +10,8 @@ export interface SolveOptions {
   evaluatePerRun?: number;
   maxResults?: number;
   onProgress?: (done: number, total: number) => void;
+  /** Measure shrinkwrapped shells for the shortlist (default true when organic > 0). */
+  wrapMetrics?: boolean;
 }
 
 export interface SolveResult {
@@ -96,7 +99,10 @@ export function solve(cfg: DesignConfig, opts: SolveOptions = {}): SolveResult {
     }
   }
   const ranked = rankDesigns(all, cfg);
-  return { designs: shortlist(ranked, maxResults), stats: { runs, evaluated: all.length, ms: performance.now() - t0 } };
+  const designs = shortlist(ranked, maxResults);
+  // Organic shells: measure the shrinkwrapped outline of every shortlisted design (coarse grid).
+  if ((cfg.prefs.organic ?? 0) > 0 && opts.wrapMetrics !== false) for (const d of designs) d.wrap = wrapMetrics(d, cfg, cfg.prefs.organic);
+  return { designs, stats: { runs, evaluated: all.length, ms: performance.now() - t0 } };
 }
 
 const TOPO_SHORT: Record<TopologyId, string> = {

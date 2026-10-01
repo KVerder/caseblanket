@@ -63,6 +63,22 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
       </Section>
 
       <Section title="Shape & finish">
+        <Slider
+          id="organic"
+          label="Shape"
+          value={p.organic}
+          min={0}
+          max={1}
+          step={0.05}
+          left="Straight box"
+          right="Organic shrinkwrap"
+          format={(v) => (v === 0 ? 'Box' : v < 0.35 ? 'Softened' : v < 0.75 ? 'Flowing' : 'Organic')}
+          onChange={(v) => set('organic', v)}
+        />
+        <p className="muted small">
+          The shell is pulled around the parts like shrink film, filling the hollows between them. More organic means rounder edges,
+          which cost a few millimetres per side. Edge style and radius shape the straight end of the slider.
+        </p>
         <Segmented
           label="Edges"
           value={p.edgeStyle}

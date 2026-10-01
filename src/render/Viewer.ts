@@ -7,6 +7,7 @@ import type { DesignConfig } from '../model/types';
 import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, localToWorld, signOf, wallAxes, type Vec3 } from '../solver/geometry';
 import { boardStack } from '../solver/items';
+import type { ShellMesh } from '../solver/shrinkwrap';
 import { WorldMap } from './mapping';
 import {
   buildBoard,
@@ -105,6 +106,7 @@ export class CaseViewer {
   doubleTapWindow = 350;
   private anim: { from: THREE.Vector3; to: THREE.Vector3; fromT: THREE.Vector3; toT: THREE.Vector3; t0: number } | null = null;
   private design: Design | null = null;
+  private map: WorldMap | null = null;
   private hemi!: THREE.HemisphereLight;
   private key!: THREE.DirectionalLight;
   private edgeMat = new THREE.LineBasicMaterial({ color: '#8b93a1', transparent: true, opacity: 0.5 });
@@ -151,6 +153,37 @@ export class CaseViewer {
       depthWrite: false,
       side: THREE.DoubleSide,
     });
+
+    // Perforations for shrinkwrapped shells: a per-vertex vent mask (1 = mesh, 2 = solid cut-out)
+    // drawn as a triplanar hole pattern in world millimetres.
+    this.shellMaterial.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute float vent;\nvarying float vVent;\nvarying vec3 vWP;\nvarying vec3 vWN;')
+        .replace(
+          '#include <begin_vertex>',
+          '#include <begin_vertex>\nvVent = vent;\nvWP = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvWN = normalize(mat3(modelMatrix) * normal);',
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying float vVent;\nvarying vec3 vWP;\nvarying vec3 vWN;')
+        .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+          if (vVent > 0.5) {
+            vec3 an = abs(vWN);
+            vec2 uv = (an.x > an.y && an.x > an.z) ? vWP.yz : ((an.y > an.z) ? vWP.xz : vWP.xy);
+            float hole = 1.0;
+            if (vVent < 1.5) {
+              vec2 q = uv / 6.0;
+              q.x += mod(floor(q.y), 2.0) * 0.5;
+              vec2 f = fract(q) - 0.5;
+              hole = 1.0 - smoothstep(0.34, 0.42, length(f));
+            }
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.02), hole * 0.93);
+            diffuseColor.a = mix(diffuseColor.a, 1.0, hole * 0.6);
+          }`,
+        );
+    };
+    this.shellMaterial.customProgramCacheKey = () => 'caseblanket-shell-v1';
 
     this.ground = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
@@ -270,7 +303,7 @@ export class CaseViewer {
     this.shellMaterial.visible = this.opts.shellOpacity > 0.01;
     this.shellMaterial.depthWrite = this.opts.shellOpacity > 0.95;
     this.shell.children.forEach((c) => {
-      if (c.userData.vent) c.visible = this.opts.shellOpacity > 0.01;
+      if (c.userData.vent) c.visible = this.opts.shellOpacity > 0.01 && !this.shell.children.some((x) => x.userData.organic);
       if (c.userData.edges) ((c as THREE.LineSegments).material as THREE.LineBasicMaterial).opacity = 0.25 + 0.5 * (1 - this.opts.shellOpacity);
     });
     this.airGroup.visible = this.opts.showAirflow;
@@ -309,7 +342,7 @@ export class CaseViewer {
     }
   }
 
-  setDesign(design: Design, cfg: DesignConfig, fit: boolean) {
+  setDesign(design: Design, cfg: DesignConfig, fit: boolean, organicPending = false) {
     this.design = design;
     for (const g of [this.shell, this.partsGroup, this.airGroup, this.dimGroup, this.ghostGroup, this.labelGroup]) this.clear(g);
     this.partHomes = [];
@@ -322,9 +355,11 @@ export class CaseViewer {
     const geo = shellGeometry(ext.x, ext.y, ext.z, cfg.prefs.edgeRadius, cfg.prefs.edgeStyle === 'chamfer');
     const shellMesh = new THREE.Mesh(geo, this.shellMaterial);
     shellMesh.renderOrder = 2;
+    shellMesh.userData.boxShell = true;
     this.shell.add(shellMesh);
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 28), this.edgeMat);
     edges.userData.edges = true;
+    edges.userData.boxShell = true;
     this.shell.add(edges);
 
     // ---- vents
@@ -373,6 +408,7 @@ export class CaseViewer {
       mesh.matrix.makeBasis(bx, by, new THREE.Vector3().crossVectors(bx, by));
       mesh.matrix.setPosition(center);
       mesh.userData.vent = true;
+      mesh.userData.boxShell = true;
       mesh.renderOrder = 3;
       this.shell.add(mesh);
 
@@ -389,19 +425,6 @@ export class CaseViewer {
         (arrow.line.material as THREE.LineBasicMaterial).linewidth = 2;
         this.airGroup.add(arrow);
       }
-    }
-
-    // ---- feet
-    if (design.feet > 0) {
-      const footMat = new THREE.MeshStandardMaterial({ color: '#1b1c1f', roughness: 0.9 });
-      const fx = ext.x / 2 - 25;
-      const fz = ext.z / 2 - 25;
-      for (const sx of [-1, 1])
-        for (const sz of [-1, 1]) {
-          const f = new THREE.Mesh(new THREE.CylinderGeometry(10, 10, design.feet, 20), footMat);
-          f.position.set(sx * Math.max(0, fx), -ext.y / 2 - design.feet / 2, sz * Math.max(0, fz));
-          this.shell.add(f);
-        }
     }
 
     // ---- parts
@@ -464,23 +487,93 @@ export class CaseViewer {
       this.shell.add(spine);
     }
 
-    // ---- dimensions
-    this.buildDims(ext, design);
-
-    // ---- ground
-    const r = Math.hypot(ext.x, ext.z) * 0.85;
-    this.ground.scale.set(r * 1.6, r * 1.6, 1);
-    this.ground.position.y = -ext.y / 2 - design.feet - 0.5;
+    // ---- dimensions and ground
+    this.map = map;
+    this.layoutAround(new THREE.Box3(ext.clone().multiplyScalar(-0.5), ext.clone().multiplyScalar(0.5)), design.feet);
 
     this.radius = Math.max(ext.x, ext.y, ext.z) * 0.62 + 40;
     this.controls.minDistance = this.radius * 0.35;
     this.controls.maxDistance = this.radius * 12;
     this.setOptions({});
+    // An organic shell is on its way: don't flash the straight box meanwhile.
+    if (organicPending) for (const c of this.shell.children) if (c.userData.boxShell) c.visible = false;
     if (fit) this.setView('iso', false);
     this.needsRender = true;
   }
 
-  private buildDims(ext: THREE.Vector3, design: Design) {
+  /** Dimension lines, ground and feet around an outer bounding box (world space). */
+  private layoutAround(b: THREE.Box3, feet: number) {
+    this.clear(this.dimGroup);
+    for (const c of [...this.shell.children]) if (c.userData.foot) this.shell.remove(c);
+    const ext = b.getSize(new THREE.Vector3());
+    const ctr = b.getCenter(new THREE.Vector3());
+    this.dimGroup.position.copy(ctr);
+    this.buildDims(ext, feet);
+    if (feet > 0) {
+      const footMat = new THREE.MeshStandardMaterial({ color: '#1b1c1f', roughness: 0.9 });
+      const fx = Math.max(0, ext.x / 2 - 25);
+      const fz = Math.max(0, ext.z / 2 - 25);
+      for (const sx of [-1, 1])
+        for (const sz of [-1, 1]) {
+          const f = new THREE.Mesh(new THREE.CylinderGeometry(10, 10, feet, 20), footMat);
+          f.position.set(ctr.x + sx * fx, b.min.y - feet / 2, ctr.z + sz * fz);
+          f.userData.foot = true;
+          this.shell.add(f);
+        }
+    }
+    const r = Math.hypot(ext.x, ext.z) * 0.85;
+    this.ground.scale.set(r * 1.6, r * 1.6, 1);
+    this.ground.position.set(ctr.x, b.min.y - feet - 0.5, ctr.z);
+  }
+
+  /**
+   * Replace the straight box with a shrinkwrapped shell (or go back to the box with null).
+   * Vents become a per-vertex mask that the shell shader perforates.
+   */
+  setShell(result: { mesh: ShellMesh; vent: Float32Array } | null) {
+    const design = this.design;
+    const map = this.map;
+    if (!design || !map) return;
+    for (const c of [...this.shell.children]) {
+      if (c.userData.organic) {
+        this.shell.remove(c);
+        (c as THREE.Mesh).geometry.dispose();
+      }
+    }
+    const boxed = !result;
+    for (const c of this.shell.children) if (c.userData.boxShell) c.visible = boxed && (!c.userData.vent || this.opts.shellOpacity > 0.01);
+    if (!result) {
+      const ext = map.size(design.exterior);
+      this.layoutAround(new THREE.Box3(ext.clone().multiplyScalar(-0.5), ext.clone().multiplyScalar(0.5)), design.feet);
+      this.needsRender = true;
+      return;
+    }
+    const { mesh, vent } = result;
+    const pos = new Float32Array(mesh.positions.length);
+    const nrm = new Float32Array(mesh.normals.length);
+    const p = new THREE.Vector3();
+    const o = map.point([0, 0, 0]);
+    for (let i = 0; i < pos.length; i += 3) {
+      p.copy(map.point([mesh.positions[i], mesh.positions[i + 1], mesh.positions[i + 2]]));
+      pos.set([p.x, p.y, p.z], i);
+      p.copy(map.point([mesh.normals[i], mesh.normals[i + 1], mesh.normals[i + 2]])).sub(o);
+      nrm.set([p.x, p.y, p.z], i);
+    }
+    // Both world mappings are proper rotations, so triangle winding carries over unchanged.
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+    geo.setAttribute('vent', new THREE.BufferAttribute(vent, 1));
+    geo.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+    const shell = new THREE.Mesh(geo, this.shellMaterial);
+    shell.renderOrder = 2;
+    shell.userData.organic = true;
+    this.shell.add(shell);
+    this.layoutAround(map.box(mesh.bbox), design.feet);
+    this.needsRender = true;
+  }
+
+  private buildDims(ext: THREE.Vector3, feetH: number) {
     const hx = ext.x / 2;
     const hy = ext.y / 2;
     const hz = ext.z / 2;
@@ -496,9 +589,9 @@ export class CaseViewer {
       this.dimGroup.add(label);
     };
     const fmt = (v: number) => `${Math.round(v)} mm`;
-    const y0 = -hy - design.feet - off;
+    const y0 = -hy - feetH - off;
     seg(new THREE.Vector3(-hx, y0, hz + off), new THREE.Vector3(hx, y0, hz + off), new THREE.Vector3(0, 6, 0), fmt(ext.x), 'dim-w');
-    seg(new THREE.Vector3(hx + off, -hy - design.feet, hz + off), new THREE.Vector3(hx + off, hy, hz + off), new THREE.Vector3(6, 0, 0), fmt(ext.y + design.feet), 'dim-h');
+    seg(new THREE.Vector3(hx + off, -hy - feetH, hz + off), new THREE.Vector3(hx + off, hy, hz + off), new THREE.Vector3(6, 0, 0), fmt(ext.y + feetH), 'dim-h');
     seg(new THREE.Vector3(hx + off, y0, -hz), new THREE.Vector3(hx + off, y0, hz), new THREE.Vector3(0, 6, 0), fmt(ext.z), 'dim-d');
   }
 

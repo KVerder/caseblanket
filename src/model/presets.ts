@@ -422,6 +422,7 @@ export const DEFAULT_PREFS: Preferences = {
   minAirflowAdequacy: 0.8,
   edgeStyle: 'round',
   edgeRadius: 6,
+  organic: 0.6,
   wallThickness: 1.5,
   materialId: 'al5052',
   ventStyleId: 'hex',

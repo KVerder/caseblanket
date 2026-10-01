@@ -167,6 +167,8 @@ export interface Preferences {
   thinnessPriority: number;
   /** Designs whose worst heat path gets less than this share of the airflow it needs are ranked last. */
   minAirflowAdequacy: number;
+  /** 0 = straight box, 1 = organic shrinkwrap around the parts. */
+  organic: number;
   edgeStyle: EdgeStyle;
   edgeRadius: number;
   wallThickness: number;
