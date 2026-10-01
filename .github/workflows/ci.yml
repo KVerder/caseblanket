@@ -41,8 +41,8 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Export the default design as an OpenFOAM case
-        run: OPENFOAM_OUT=$PWD/ofcase OPENFOAM_ITERATIONS=50 OPENFOAM_CELL_MM=12 npx vitest run tests/openfoam.test.ts
-      - name: Mesh and run 50 iterations (openfoam.com v2312)
+        run: OPENFOAM_OUT=$PWD/ofcase OPENFOAM_ITERATIONS=300 OPENFOAM_CELL_MM=12 npx vitest run tests/openfoam.test.ts
+      - name: Mesh and run 300 iterations (openfoam.com v2312)
         run: |
           docker run --rm --user root --entrypoint /bin/bash -v "$PWD/ofcase:/case" -w /case opencfd/openfoam-default:2312 \
             -c 'source /usr/lib/openfoam/openfoam2312/etc/bashrc; chmod +x Allrun; ./Allrun; tail -n 30 log.*'
@@ -50,6 +50,8 @@ jobs:
         run: |
           grep -q "Mesh OK" ofcase/log.checkMesh
           grep -q "^End" ofcase/log.buoyantSimpleFoam
+      - name: Compare the run with the app
+        run: OPENFOAM_RESULTS=$PWD/ofcase npx vitest run tests/openfoam.test.ts -t "reference run" --silent=false
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { defaultConfig } from '../src/model/presets';
 import { openfoamCase } from '../src/export/openfoam';
@@ -127,5 +127,28 @@ describe('OpenFOAM results import', () => {
     const flowRow = c.rows.find((x) => x.unit === 'CFM')!;
     expect(flowRow.difference).toBeCloseTo(10, 0);
     expect(c.recirculation[0].share).toBeCloseTo(0.25, 6);
+  });
+});
+
+describe('OpenFOAM reference run (CI, after the case has run)', () => {
+  // OPENFOAM_RESULTS=<case folder>: import its postProcessing results and print them next to the app.
+  it('imports the run and compares it with the app', async () => {
+    const dir = process.env.OPENFOAM_RESULTS;
+    if (!dir) return;
+    const { parseFoamResults, compareWithApp } = await import('../src/export/foamResults');
+    const walk = (d: string): string[] => readdirSync(d).flatMap((n) => (statSync(join(d, n)).isDirectory() ? walk(join(d, n)) : [join(d, n)]));
+    const files = walk(join(dir, 'postProcessing'))
+      .filter((p) => p.endsWith('.dat'))
+      .map((p) => ({ path: p, text: readFileSync(p, 'utf8') }));
+    const cfg = defaultConfig();
+    const d = solve(cfg, { beamWidth: 12, wrapMetrics: false }).designs[0];
+    const r = parseFoamResults(files);
+    const c = compareWithApp(d, cfg.prefs.ambientC, r);
+    console.log(`OpenFOAM after ${r.iteration} iterations vs the app (1D model):`);
+    for (const row of c.rows) console.log(`  ${row.what.padEnd(36)} app ${row.app.toFixed(1).padStart(6)} ${row.unit}  OpenFOAM ${row.reference.toFixed(1).padStart(6)}  diff ${row.difference >= 0 ? '+' : ''}${row.difference.toFixed(1)}${row.unit === 'CFM' ? ' %' : ' K'}`);
+    for (const x of c.recirculation) console.log(`  recirculation at ${x.fan}: ${(x.share * 100).toFixed(0)} %`);
+    expect(r.iteration).toBeGreaterThan(0);
+    expect(c.rows.filter((x) => x.unit === 'CFM').length).toBeGreaterThan(0);
+    for (const row of c.rows) expect(Number.isFinite(row.reference)).toBe(true);
   });
 });

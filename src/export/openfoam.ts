@@ -169,6 +169,12 @@ export interface OpenFoamOptions {
   cellMm?: number;
   /** Solver iterations. */
   iterations?: number;
+  /**
+   * Snap the mesh to the shell surface. Off by default: snapping left collapsed sliver cells where
+   * the shell wall meets a vent, and buoyantSimpleFoam diverged within three iterations even with
+   * no fans, heat or gravity; the stair-stepped (castellated) mesh runs stably.
+   */
+  snap?: boolean;
 }
 
 /** Everything needed to run the design in OpenFOAM. */
@@ -332,7 +338,7 @@ boundary
     'system/snappyHexMeshDict',
     header('dictionary', 'snappyHexMeshDict', 'system') +
       `castellatedMesh true;
-snap            true;
+snap            ${opts.snap ? 'true' : 'false'};
 addLayers       false;
 
 geometry
@@ -423,13 +429,32 @@ mergeTolerance 1e-6;
 `,
   );
 
-  // cellZones for porous blocks and heat sources.
+  // cellZones for vents, porous blocks and heat sources. OpenFOAM keeps a cell in one cellZone
+  // only, so every zone is its box minus all zones before it (vents, then porous blocks, then
+  // heat). A heat source that is a porous block (fins, PSU, GPU shroud, radiator core) heats that
+  // block's own zone; only the rest (the board) get zones of their own. Overlapping zones used to
+  // leave a heat source with no cells (a division by zero in OpenFOAM) or silently fewer.
   const porous = g.porous.map((p, i) => ({ ...p, name: `porous${i}_${safe(p.label)}`, wb: worldBox(cfg, p.box), waxes: p.along.map((a) => worldAxis(cfg, a)) }));
-  const heat = g.heat.map((h) => ({ ...h, name: `heat_${safe(h.id)}`, wb: worldBox(cfg, h.box) }));
+  const overlap = (a: Box, b: Box) => {
+    let inter = 1;
+    let va = 1;
+    let vb = 1;
+    for (let k = 0; k < 3; k++) {
+      inter *= Math.max(0, Math.min(a.max[k], b.max[k]) - Math.max(a.min[k], b.min[k]));
+      va *= a.max[k] - a.min[k];
+      vb *= b.max[k] - b.min[k];
+    }
+    return inter / Math.max(1e-12, Math.min(va, vb));
+  };
+  const heat = g.heat.map((h) => {
+    const host = porous.find((p) => overlap(p.box, h.box) > 0.8);
+    const name = `heat_${safe(h.id)}`;
+    return { ...h, name, zone: host ? host.name : name, own: !host, wb: worldBox(cfg, h.box) };
+  });
   const topo = [
     ...ventZones.map((v) => ({ name: v.name, box: v.wb })),
     ...porous.map((p) => ({ name: p.name, box: p.wb })),
-    ...heat.map((h) => ({ name: h.name, box: h.wb })),
+    ...heat.filter((h) => h.own).map((h) => ({ name: h.name, box: h.wb })),
   ];
   add(
     'system/topoSetDict',
@@ -438,13 +463,25 @@ mergeTolerance 1e-6;
 (
 ${topo
   .map(
-    (t) => `    {
+    (t, i) => `    {
         name    ${t.name};
         type    cellSet;
         action  new;
         source  boxToCell;
         box     ${vec(t.box.min)} ${vec(t.box.max)};
     }
+${topo
+  .slice(0, i)
+  .map(
+    (e) => `    {
+        name    ${t.name};
+        type    cellSet;
+        action  subtract;
+        source  cellToCell;
+        set     ${e.name};
+    }`,
+  )
+  .join('\n')}
     {
         name    ${t.name};
         type    cellZoneSet;
@@ -593,7 +630,7 @@ ${fans
         log             false;
         writeFields     false;
         regionType      cellZone;
-        name            ${h.name};
+        name            ${h.zone};
         operation       volAverage;
         fields          (T s);
     }`,
@@ -636,7 +673,7 @@ ${heat
                 type            scalarSemiImplicitSource;
                 volumeMode      absolute;
                 selectionMode   cellZone;
-                cellZone        ${h.name};
+                cellZone        ${h.zone};
                 injectionRateSuSp
                 {
                     s           (1 0);
@@ -806,7 +843,7 @@ mixture
     type            scalarSemiImplicitSource;
     volumeMode      absolute;
     selectionMode   cellZone;
-    cellZone        ${h.name};
+    cellZone        ${h.zone};
     injectionRateSuSp
     {
         h           (${fmt(h.watts)} 0);
@@ -870,7 +907,7 @@ obstacles, radiators/fins/PSU as porous zones, ${fans.length}
 fan disks as fan-curve pressure jumps (at the app's solved fan speeds), ${heat.length} heat sources,
 buoyancy (Boussinesq), k-omega SST. Room air outside the case is not meshed, so exhaust that curls
 back into an intake outside the case is not modelled here (the in-app simulation covers it).
-Base cells ${fmt(cell * 1000)} mm, one refinement level at surfaces.
+Base cells ${fmt(cell * 1000)} mm, one refinement level at surfaces. The mesh is ${opts.snap ? 'snapped to the shell' : 'stair-stepped (castellated, not snapped: snapping left sliver cells that made the solver diverge)'}.
 
 Outputs (postProcessing/): flow_<fan> (mass flow, kg/s), tin_<fan> (flow-weighted T and tracer s
 entering each fan), tzone_<heat source> (mean T and s in each heat source).

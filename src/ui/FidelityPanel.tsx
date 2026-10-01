@@ -79,8 +79,8 @@ export function FidelityPanel({ design, cfg }: { design: Design; cfg: DesignConf
       <h4 className="sub">OpenFOAM</h4>
       <p className="muted small">
         A case for openfoam.com v2312+ (buoyantSimpleFoam, k-omega SST, fans on their curves, porous radiators and vents, heat sources). Run it
-        with ./Allrun, then import its postProcessing folder. Experimental: the case meshes cleanly in OpenFOAM, but a full solver run has not
-        been confirmed yet.
+        with ./Allrun, then import its postProcessing folder. The mesh is stair-stepped (not snapped to the shell): snapping made the solver
+        diverge. On the default design it converges in about 300 iterations.
       </p>
       <div className="explorer-actions">
         <button type="button" className="btn ghost small" onClick={exportCase} disabled={busy}>
