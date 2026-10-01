@@ -34,6 +34,26 @@ export function upAxis(cfg: DesignConfig) {
   return cfg.prefs.orientation === 'tower' ? { axis: 1, sign: 1 } : { axis: 2, sign: 1 };
 }
 
+/**
+ * Fan disk forcing from a fan's rated curve: free-air axial speed over the disk area, and the
+ * acceleration at stall that builds the fan's maximum static pressure across `layers` cells.
+ */
+export function fanForcing(spec: FanSpec, areaMm2: number, layers: number, h: number) {
+  const vmax = ((spec.maxAirflowM3h / 3600) * 1e9) / areaMm2;
+  const depthM = (layers * h) / 1000;
+  const a0 = ((spec.maxPressureMmH2O * MMH2O_TO_PA) / (RHO * depthM)) * 1000; // mm/s²
+  return { vmax, a0 };
+}
+
+/**
+ * Quadratic porous loss per mm of travel for a block `cells` thick: Δp = ζ·½ρv² spread over the
+ * faces the drag acts on. Drag acts on every face touching a porous cell, so a block n cells thick
+ * has n + 1 such faces along the flow.
+ */
+export function porousBeta(zeta: number, cells: number, h: number) {
+  return zeta / (2 * (cells + 1) * h);
+}
+
 export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping = NO_SHAPING, opts: SceneOptions = {}): Scene {
   const margin = opts.margin ?? 60;
   const target = opts.cells ?? 45000;
@@ -82,7 +102,7 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
     for (const c of cells) cellType[c] = CELL_SOLID;
   };
   /** Quadratic loss coefficient per mm of travel: ζ spread over the block thickness. */
-  const betaFor = (zeta: number, thickness: number) => zeta / (2 * Math.max(thickness, h));
+  const betaFor = (zeta: number, thickness: number) => porousBeta(zeta, Math.max(1, Math.round(thickness / h)), h);
   const HIGH = 0.5; // 1/mm: effectively blocks flow across fins / boards
 
   // ------------------------------------------------ shell: solid band, vents porous
@@ -160,10 +180,8 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
     const crossCells = usable.length / layers;
     const area = Math.max(h * h, crossCells * h * h); // mm²
     const speed = (flow * 1e9) / count / area;
-    const vmax = ((spec.maxAirflowM3h / 3600) * 1e9) / area;
-    const depthM = (layers * h) / 1000;
-    const a0 = ((spec.maxPressureMmH2O * MMH2O_TO_PA) / (RHO * depthM)) * 1000; // mm/s²
-    fans.push({ cells: Int32Array.from(usable), axis: ax, sign, speed, vmax, a0, center: toGrid(centreW), swirl: SWIRL, group });
+    const { vmax, a0 } = fanForcing(spec, area, layers, h);
+    fans.push({ cells: Int32Array.from(usable), axis: ax, sign, speed, vmax, a0, center: toGrid(centreW), swirl: SWIRL, group, layers, pmaxPa: spec.maxPressureMmH2O * MMH2O_TO_PA });
     return usable;
   };
   /** A fan disk in a part's local frame: centre (c1, c2) on the e3 slab [z0, z1], blowing along ±e3. */

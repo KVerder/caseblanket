@@ -2,9 +2,10 @@
  * Coarse 3D incompressible flow + heat solver on a staggered (MAC) grid.
  *
  * Units: millimetres, seconds, kelvin above room temperature, watts.
- * Each step: semi-Lagrangian advection → fans, louvres, buoyancy → porous drag →
- * pressure projection (red-black SOR, open far boundary at p = 0) → heat advection,
- * sources and a turbulent diffusion term.
+ * Each step: semi-Lagrangian advection → fan swirl, louvres, buoyancy → pressure projection
+ * (red-black SOR, open far boundary at p = 0) with porous drag and fan-curve pressure jumps
+ * folded in implicitly as per-face coefficients → heat advection, sources and a turbulent
+ * diffusion term.
  *
  * Built for comparing layouts and showing where air goes, with ~10 mm cells. It does not
  * resolve fan blades, fin passages or boundary layers.
@@ -28,6 +29,10 @@ export interface FanDisk {
   center: [number, number, number];
   swirl: number; // tangential / axial
   group: string;
+  /** Cells along the axis (the jump is shared between them). */
+  layers?: number;
+  /** Stall pressure, Pa. */
+  pmaxPa?: number;
 }
 
 /** Turns air leaving a vent toward a direction (exhaust deflector / louvre). */
@@ -84,6 +89,9 @@ export interface FlowStats {
 }
 
 const RHO_CP = 1.2e-9 * 1005; // J/(mm³·K)
+const RHO_AIR = 1.2; // kg/m³
+/** A fan's stall pressure, Pa: given, or recovered from its stall acceleration over the disk depth. */
+const pmaxPa = (f: FanDisk, h: number) => f.pmaxPa ?? (f.a0 / 1000) * RHO_AIR * ((Math.max(1, f.layers ?? 1) * h) / 1000);
 const G = 9810; // mm/s²
 const BETA_T = 1 / 300; // 1/K, ideal gas near room temperature
 
@@ -103,6 +111,13 @@ export class FlowSolver {
   private w2: Float32Array;
   private T2: Float32Array;
   private div: Float32Array;
+  /** Per-face projection coefficients: v = W·(v* − Δp/h) + S (porous drag, fan jumps). */
+  private Wu: Float32Array;
+  private Wv: Float32Array;
+  private Ww: Float32Array;
+  private Su: Float32Array;
+  private Sv: Float32Array;
+  private Sw: Float32Array;
   private heatRate: Float32Array;
   steps = 0;
   time = 0;
@@ -118,6 +133,12 @@ export class FlowSolver {
     this.u2 = new Float32Array(this.u.length);
     this.v2 = new Float32Array(this.v.length);
     this.w2 = new Float32Array(this.w.length);
+    this.Wu = new Float32Array(this.u.length).fill(1);
+    this.Wv = new Float32Array(this.v.length).fill(1);
+    this.Ww = new Float32Array(this.w.length).fill(1);
+    this.Su = new Float32Array(this.u.length);
+    this.Sv = new Float32Array(this.v.length);
+    this.Sw = new Float32Array(this.w.length);
     this.T = new Float32Array(nx * ny * nz);
     this.T2 = new Float32Array(this.T.length);
     this.p = new Float32Array(this.T.length);
@@ -201,8 +222,8 @@ export class FlowSolver {
     this.applyFans(dt);
     this.applyLouvres();
     this.applyBuoyancy(dt);
-    this.applyDrag(dt);
     this.enforceSolids();
+    this.buildFaceCoefficients(dt);
     this.project(pressureIters);
     this.advectHeat(dt);
     this.steps++;
@@ -271,23 +292,96 @@ export class FlowSolver {
   }
 
   /**
-   * Fans as pressure jumps following a straight fan curve, Δp = Pmax·(1 − v/vmax), applied
-   * semi-implicitly: v' = (v + dt·a0) / (1 + dt·a0/vmax). Swirl relaxes toward a share of the axial speed.
+   * Fan disks as pressure jumps (an interior baffle, like OpenFOAM's fan condition): across each
+   * disk face in the blow direction the pressure rises by Δp = Pmax·(1 − v/vmax) from the fan
+   * curve, shared between the disk's layers. The jump's dependence on the face velocity is solved
+   * implicitly inside the pressure projection (each fan face gets a reduced conductance
+   * w = 1/(1 + R/h) and a source), so it holds at any time step.
    */
+  private fanFaces: { arr: 0 | 1 | 2; face: number; sign: number; fan: number; share: number }[] | null = null;
+
+  private buildFanFaces() {
+    const { nx, ny } = this;
+    const out: NonNullable<typeof this.fanFaces> = [];
+    this.s.fans.forEach((f, fi) => {
+      const share = 1 / Math.max(1, f.layers ?? 1);
+      for (const c of f.cells) {
+        const i = c % nx;
+        const j = Math.floor(c / nx) % ny;
+        const k = Math.floor(c / (nx * ny));
+        // Face on the downstream side of the cell.
+        const fIdx = [i, j, k];
+        if (f.sign > 0) fIdx[f.axis] += 1;
+        const n = [this.nx, this.ny, this.nz][f.axis];
+        if (fIdx[f.axis] <= 0 || fIdx[f.axis] >= n) continue;
+        const m = [...fIdx];
+        m[f.axis] -= 1;
+        if (this.s.cellType[this.cell(m[0], m[1], m[2])] === CELL_SOLID || this.s.cellType[this.cell(fIdx[0], fIdx[1], fIdx[2])] === CELL_SOLID) continue;
+        const face = f.axis === 0 ? this.iu(fIdx[0], fIdx[1], fIdx[2]) : f.axis === 1 ? this.iv(fIdx[0], fIdx[1], fIdx[2]) : this.iw(fIdx[0], fIdx[1], fIdx[2]);
+        out.push({ arr: f.axis as 0 | 1 | 2, face, sign: f.sign, fan: fi, share });
+      }
+    });
+    this.fanFaces = out;
+  }
+
+  /**
+   * Face coefficients for the projection: every face's final velocity is v = W·(v* − Δp/h) + S.
+   * Porous drag (Δp = ζ·½ρv², spread as k·|v|·v per mm) gives W = 1/(1 + k·|v*|·dt). A fan face
+   * adds the fan-curve jump J = J0 − R·v (Δp = Pmax·(1 − v/vmax), shared between the disk's
+   * layers): W = D/(1 + D·R/h), S = W·J0/h. Both are implicit, so they act in full at any dt.
+   */
+  private buildFaceCoefficients(dt: number) {
+    if (!this.fanFaces) this.buildFanFaces();
+    const { nx, ny, nz } = this;
+    const [bx, by, bz] = this.s.beta;
+    const W = [this.Wu, this.Wv, this.Ww];
+    const S = [this.Su, this.Sv, this.Sw];
+    const V = [this.u, this.v, this.w];
+    for (let a = 0; a < 3; a++) {
+      W[a].fill(1);
+      S[a].fill(0);
+    }
+    const face = (a: number, b: number, arr: Float32Array) => Math.max(a >= 0 ? arr[a] : 0, b >= 0 ? arr[b] : 0);
+    const drag = (Wa: Float32Array, Va: Float32Array, id: number, k: number) => {
+      if (k <= 0) return;
+      // Floor |v| so a still cell still feels a (linear) resistance.
+      Wa[id] = 1 / (1 + k * Math.max(Math.abs(Va[id]), 150) * dt);
+    };
+    for (let k = 0; k < nz; k++)
+      for (let j = 0; j < ny; j++)
+        for (let i = 0; i <= nx; i++) drag(this.Wu, this.u, this.iu(i, j, k), face(i > 0 ? this.cell(i - 1, j, k) : -1, i < nx ? this.cell(i, j, k) : -1, bx));
+    for (let k = 0; k < nz; k++)
+      for (let j = 0; j <= ny; j++)
+        for (let i = 0; i < nx; i++) drag(this.Wv, this.v, this.iv(i, j, k), face(j > 0 ? this.cell(i, j - 1, k) : -1, j < ny ? this.cell(i, j, k) : -1, by));
+    for (let k = 0; k <= nz; k++)
+      for (let j = 0; j < ny; j++)
+        for (let i = 0; i < nx; i++) drag(this.Ww, this.w, this.iw(i, j, k), face(k > 0 ? this.cell(i, j, k - 1) : -1, k < nz ? this.cell(i, j, k) : -1, bz));
+    const kin = (1e6 * dt) / RHO_AIR; // Pa → kinematic pressure × dt (projection units, mm²/s)
+    for (const ff of this.fanFaces!) {
+      const f = this.s.fans[ff.fan];
+      const pm = pmaxPa(f, this.h) * kin * ff.share;
+      const R = pm / f.vmax; // mm
+      const D = W[ff.arr][ff.face];
+      const w = D / (1 + (D * R) / this.h);
+      W[ff.arr][ff.face] = w;
+      S[ff.arr][ff.face] = (w * ff.sign * pm) / this.h;
+    }
+    void V;
+  }
+
+  /** Swirl behind each fan: tangential velocity around the axis, a share of the axial speed. */
   private applyFans(dt: number) {
     const relax = Math.min(1, 20 * dt);
     const { nx, ny, h } = this;
     for (const f of this.s.fans) {
+      if (f.swirl <= 0) continue;
       for (const c of f.cells) {
         const i = c % nx;
         const j = Math.floor(c / nx) % ny;
         const k = Math.floor(c / (nx * ny));
         const cur = this.centre(c);
-        const axial = cur[f.axis] * f.sign;
-        const next = (axial + dt * f.a0) / (1 + (dt * f.a0) / f.vmax);
+        const axial = Math.max(0, cur[f.axis] * f.sign);
         const d: [number, number, number] = [0, 0, 0];
-        d[f.axis] = (next - axial) * f.sign;
-        // Swirl: tangential velocity around the fan axis (right-handed about the blow direction).
         const pos = [(i + 0.5) * h, (j + 0.5) * h, (k + 0.5) * h];
         const r = [pos[0] - f.center[0], pos[1] - f.center[1], pos[2] - f.center[2]];
         r[f.axis] = 0;
@@ -295,10 +389,8 @@ export class FlowSolver {
         a[f.axis] = f.sign;
         const t = [a[1] * r[2] - a[2] * r[1], a[2] * r[0] - a[0] * r[2], a[0] * r[1] - a[1] * r[0]];
         const tl = Math.hypot(t[0], t[1], t[2]);
-        if (tl > 1e-6) {
-          const want = Math.max(0, next) * f.swirl;
-          for (let q = 0; q < 3; q++) if (q !== f.axis) d[q] = ((t[q] / tl) * want - cur[q]) * relax;
-        }
+        if (tl < 1e-6) continue;
+        for (let q = 0; q < 3; q++) if (q !== f.axis) d[q] = ((t[q] / tl) * axial * f.swirl - cur[q]) * relax;
         this.nudge(c, d);
       }
     }
@@ -326,28 +418,6 @@ export class FlowSolver {
     else if (axis === 1)
       for (let k = 0; k < nz; k++) for (let j = 1; j < ny; j++) for (let i = 0; i < nx; i++) this.v[this.iv(i, j, k)] += k0 * 0.5 * (this.T[this.cell(i, j - 1, k)] + this.T[this.cell(i, j, k)]);
     else for (let k = 1; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) this.w[this.iw(i, j, k)] += k0 * 0.5 * (this.T[this.cell(i, j, k - 1)] + this.T[this.cell(i, j, k)]);
-  }
-
-  /** Quadratic porous drag, implicit in the face velocity: v' = v / (1 + k·|v|·dt). */
-  private applyDrag(dt: number) {
-    const { nx, ny, nz } = this;
-    const [bx, by, bz] = this.s.beta;
-    const face = (a: number, b: number, arr: Float32Array) => Math.max(a >= 0 ? arr[a] : 0, b >= 0 ? arr[b] : 0);
-    const damp = (arr: Float32Array, id: number, k: number) => {
-      if (k <= 0) return;
-      const v = arr[id];
-      // Floor |v| so a still cell still feels a (linear) resistance.
-      arr[id] = v / (1 + k * Math.max(Math.abs(v), 150) * dt);
-    };
-    for (let k = 0; k < nz; k++)
-      for (let j = 0; j < ny; j++)
-        for (let i = 0; i <= nx; i++) damp(this.u, this.iu(i, j, k), face(i > 0 ? this.cell(i - 1, j, k) : -1, i < nx ? this.cell(i, j, k) : -1, bx));
-    for (let k = 0; k < nz; k++)
-      for (let j = 0; j <= ny; j++)
-        for (let i = 0; i < nx; i++) damp(this.v, this.iv(i, j, k), face(j > 0 ? this.cell(i, j - 1, k) : -1, j < ny ? this.cell(i, j, k) : -1, by));
-    for (let k = 0; k <= nz; k++)
-      for (let j = 0; j < ny; j++)
-        for (let i = 0; i < nx; i++) damp(this.w, this.iw(i, j, k), face(k > 0 ? this.cell(i, j, k - 1) : -1, k < nz ? this.cell(i, j, k) : -1, bz));
   }
 
   private enforceSolids() {
@@ -390,11 +460,20 @@ export class FlowSolver {
 
   private project(iters: number) {
     const { nx, ny, nz, h } = this;
-    this.computeDivergence();
     const p = this.p;
     const type = this.s.cellType;
     const h2 = h * h;
     const omega = 1.75;
+    const { Wu, Wv, Ww, Su, Sv, Sw, u, v, w } = this;
+    // Predicted face velocities q = W·v* + S, and their divergence.
+    for (let id = 0; id < u.length; id++) u[id] = Wu[id] * u[id] + Su[id];
+    for (let id = 0; id < v.length; id++) v[id] = Wv[id] * v[id] + Sv[id];
+    for (let id = 0; id < w.length; id++) w[id] = Ww[id] * w[id] + Sw[id];
+    this.enforceSolids();
+    this.computeDivergence();
+    const sx = 1;
+    const sy = nx + 1;
+    const sz = (nx + 1) * ny;
     for (let it = 0; it < iters; it++) {
       for (let colour = 0; colour < 2; colour++) {
         for (let k = 0; k < nz; k++)
@@ -402,37 +481,54 @@ export class FlowSolver {
             for (let i = (j + k + colour) & 1; i < nx; i += 2) {
               const c = i + nx * (j + ny * k);
               if (type[c] === CELL_SOLID) continue;
+              // Σ W·(p_n − p_c) = h²·div(q); outside the domain is open air at p = 0; solids carry no flux.
               let sum = 0;
-              let cnt = 0;
-              // Outside the domain: open air at p = 0. Solid neighbours: no flux (skipped).
-              if (i === 0) cnt++;
-              else if (type[c - 1] !== CELL_SOLID) (sum += p[c - 1]), cnt++;
-              if (i === nx - 1) cnt++;
-              else if (type[c + 1] !== CELL_SOLID) (sum += p[c + 1]), cnt++;
-              if (j === 0) cnt++;
-              else if (type[c - nx] !== CELL_SOLID) (sum += p[c - nx]), cnt++;
-              if (j === ny - 1) cnt++;
-              else if (type[c + nx] !== CELL_SOLID) (sum += p[c + nx]), cnt++;
-              if (k === 0) cnt++;
-              else if (type[c - nx * ny] !== CELL_SOLID) (sum += p[c - nx * ny]), cnt++;
-              if (k === nz - 1) cnt++;
-              else if (type[c + nx * ny] !== CELL_SOLID) (sum += p[c + nx * ny]), cnt++;
-              if (cnt === 0) continue;
-              const target = (sum - this.div[c] * h2) / cnt;
-              p[c] += omega * (target - p[c]);
+              let den = 0;
+              const fu = i + sy * j + sz * k; // u face at i
+              const fv = i + nx * (j + (ny + 1) * k); // v face at j
+              const fw = i + nx * (j + ny * k); // w face at k
+              let wt = Wu[fu];
+              if (i === 0) den += wt;
+              else if (type[c - 1] !== CELL_SOLID) (sum += wt * p[c - 1]), (den += wt);
+              wt = Wu[fu + sx];
+              if (i === nx - 1) den += wt;
+              else if (type[c + 1] !== CELL_SOLID) (sum += wt * p[c + 1]), (den += wt);
+              wt = Wv[fv];
+              if (j === 0) den += wt;
+              else if (type[c - nx] !== CELL_SOLID) (sum += wt * p[c - nx]), (den += wt);
+              wt = Wv[fv + nx];
+              if (j === ny - 1) den += wt;
+              else if (type[c + nx] !== CELL_SOLID) (sum += wt * p[c + nx]), (den += wt);
+              wt = Ww[fw];
+              if (k === 0) den += wt;
+              else if (type[c - nx * ny] !== CELL_SOLID) (sum += wt * p[c - nx * ny]), (den += wt);
+              wt = Ww[fw + nx * ny];
+              if (k === nz - 1) den += wt;
+              else if (type[c + nx * ny] !== CELL_SOLID) (sum += wt * p[c + nx * ny]), (den += wt);
+              if (den <= 0) continue;
+              p[c] += omega * ((sum - this.div[c] * h2) / den - p[c]);
             }
       }
     }
     const P = (i: number, j: number, k: number) => (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz ? 0 : p[this.cell(i, j, k)]);
     for (let k = 0; k < nz; k++)
       for (let j = 0; j < ny; j++)
-        for (let i = 0; i <= nx; i++) if (!this.solid(i - 1, j, k) && !this.solid(i, j, k)) this.u[this.iu(i, j, k)] -= (P(i, j, k) - P(i - 1, j, k)) / h;
+        for (let i = 0; i <= nx; i++) {
+          const id = this.iu(i, j, k);
+          if (!this.solid(i - 1, j, k) && !this.solid(i, j, k)) u[id] -= (Wu[id] * (P(i, j, k) - P(i - 1, j, k))) / h;
+        }
     for (let k = 0; k < nz; k++)
       for (let j = 0; j <= ny; j++)
-        for (let i = 0; i < nx; i++) if (!this.solid(i, j - 1, k) && !this.solid(i, j, k)) this.v[this.iv(i, j, k)] -= (P(i, j, k) - P(i, j - 1, k)) / h;
+        for (let i = 0; i < nx; i++) {
+          const id = this.iv(i, j, k);
+          if (!this.solid(i, j - 1, k) && !this.solid(i, j, k)) v[id] -= (Wv[id] * (P(i, j, k) - P(i, j - 1, k))) / h;
+        }
     for (let k = 0; k <= nz; k++)
       for (let j = 0; j < ny; j++)
-        for (let i = 0; i < nx; i++) if (!this.solid(i, j, k - 1) && !this.solid(i, j, k)) this.w[this.iw(i, j, k)] -= (P(i, j, k) - P(i, j, k - 1)) / h;
+        for (let i = 0; i < nx; i++) {
+          const id = this.iw(i, j, k);
+          if (!this.solid(i, j, k - 1) && !this.solid(i, j, k)) w[id] -= (Ww[id] * (P(i, j, k) - P(i, j, k - 1))) / h;
+        }
   }
 
   private advectHeat(dt: number) {
