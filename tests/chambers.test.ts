@@ -47,6 +47,24 @@ describe('internal chambers', () => {
     }
   });
 
+  it('never puts a partition through any functional clearance (fan gaps, cable room)', () => {
+    for (const cfg of [defaultConfig(), airConfig()]) {
+      const tol = cfg.prefs.tolerance / 2;
+      for (const d of solve(cfg, { beamWidth: 12, wrapMetrics: false }).designs.slice(0, 4)) {
+        for (const l of chamberLayouts(d, cfg))
+          for (const cut of l.cuts)
+            for (const p of d.parts) {
+              // The clearance without the shared tolerance band, never smaller than the body.
+              const lo = p.clearance.min.map((x, a) => Math.min(p.body.min[a], x + tol));
+              const hi = p.clearance.max.map((x, a) => Math.max(p.body.max[a], x - tol));
+              const inRegion = [0, 1, 2].every((a) => hi[a] > cut.region.min[a] && lo[a] < cut.region.max[a]);
+              const straddles = lo[cut.axis] < cut.at - PARTITION_THICKNESS / 2 && hi[cut.axis] > cut.at + PARTITION_THICKNESS / 2;
+              expect(inRegion && straddles, `${d.id}: wall at ${cut.axis}=${cut.at.toFixed(1)} cuts ${p.id}'s clearance`).toBe(false);
+            }
+      }
+    }
+  });
+
   it('adopts a partition when the card heats the CPU cooler, and only past the threshold', () => {
     const cfg = airConfig();
     const designs = solve(cfg, { wrapMetrics: false }).designs;

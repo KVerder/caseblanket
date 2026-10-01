@@ -93,28 +93,30 @@ describe('recirculation and deflectors', () => {
    * and an intake pulling air back in (−x) a few cells away. Some exhaust gets re-ingested; a
    * deflector that throws the exhaust away from the intake should lower the intake temperature.
    */
-  const build = (deflect: boolean) => {
-    const s = emptyScene([34, 22, 10], 10);
+  /** f = grid refinement factor: cells are 10/f mm, every index scales by f. */
+  const build = (deflect: boolean, f = 1) => {
+    const s = emptyScene([34 * f, 22 * f, 10 * f], 10 / f);
     const [nx, ny, nz] = s.n;
-    for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) s.cellType[idx(s, 20, j, k)] = CELL_SOLID;
+    const wallI = 20 * f;
+    for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let q = 0; q < f; q++) s.cellType[idx(s, wallI + q, j, k)] = CELL_SOLID;
     const exhaust: number[] = [];
     const intake: number[] = [];
     const heatCells: number[] = [];
-    for (let k = 3; k < 7; k++) {
-      for (let j = 6; j < 10; j++) {
-        s.cellType[idx(s, 20, j, k)] = 0;
-        exhaust.push(idx(s, 20, j, k));
-        heatCells.push(idx(s, 18, j, k));
+    for (let k = 3 * f; k < 7 * f; k++) {
+      for (let j = 6 * f; j < 10 * f; j++) {
+        for (let q = 0; q < f; q++) s.cellType[idx(s, wallI + q, j, k)] = 0;
+        exhaust.push(idx(s, wallI + f - 1, j, k));
+        heatCells.push(idx(s, 18 * f, j, k));
       }
-      for (let j = 12; j < 16; j++) {
-        s.cellType[idx(s, 20, j, k)] = 0;
-        intake.push(idx(s, 20, j, k));
+      for (let j = 12 * f; j < 16 * f; j++) {
+        for (let q = 0; q < f; q++) s.cellType[idx(s, wallI + q, j, k)] = 0;
+        intake.push(idx(s, wallI, j, k));
       }
     }
     // Inside the box the two streams are separated by a baffle.
-    for (let k = 0; k < nz; k++) for (let i = 0; i < 20; i++) s.cellType[idx(s, i, 11, k)] = CELL_SOLID;
-    s.fans.push({ cells: Int32Array.from(exhaust), axis: 0, sign: 1, speed: 1500, vmax: 2500, a0: 3e5, center: [205, 80, 50], swirl: 0, group: 'out' });
-    s.fans.push({ cells: Int32Array.from(intake), axis: 0, sign: -1, speed: 1500, vmax: 2500, a0: 3e5, center: [205, 140, 50], swirl: 0, group: 'in' });
+    for (let k = 0; k < nz; k++) for (let i = 0; i < wallI; i++) for (let q = 0; q < f; q++) s.cellType[idx(s, i, 11 * f + q, k)] = CELL_SOLID;
+    s.fans.push({ cells: Int32Array.from(exhaust), axis: 0, sign: 1, speed: 1500, vmax: 2500, a0: 3e5, center: [205, 80, 50], swirl: 0, group: 'out', pmaxPa: 3.6 });
+    s.fans.push({ cells: Int32Array.from(intake), axis: 0, sign: -1, speed: 1500, vmax: 2500, a0: 3e5, center: [205, 140, 50], swirl: 0, group: 'in', pmaxPa: 3.6 });
     s.heat.push({ id: 'h', label: 'h', cells: Int32Array.from(heatCells), watts: 150 });
     s.heat.push({ id: 'in', label: 'intake', cells: Int32Array.from(intake), watts: 0.0001 });
     if (deflect) {
@@ -127,11 +129,20 @@ describe('recirculation and deflectors', () => {
     void ny;
     return s;
   };
-  const intakeRise = (deflect: boolean) => {
-    const sim = new FlowSolver(build(deflect));
-    for (let t = 0; t < 260; t++) sim.step(0.01, 30);
+  const intakeRise = (deflect: boolean, f = 1) => {
+    const sim = new FlowSolver(build(deflect, f));
+    const dt = 0.01 / f;
+    for (let t = 0; t < 2.6; t += dt) sim.step(dt, 30 * f);
     return sim.stats().sources.find((x) => x.id === 'in')!.meanRise;
   };
+
+  it('keeps the deflector gain when the grid is twice as fine', () => {
+    const coarse = intakeRise(false) - intakeRise(true);
+    const fine = intakeRise(false, 2) - intakeRise(true, 2);
+    console.log(`deflector gain: ${coarse.toFixed(2)} K at 10 mm, ${fine.toFixed(2)} K at 5 mm`);
+    expect(coarse).toBeGreaterThan(0);
+    expect(fine).toBeGreaterThan(0);
+  }, 600000);
 
   it('sees hot exhaust re-ingested, and less of it with the deflector', () => {
     const plain = intakeRise(false);
