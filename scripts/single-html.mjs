@@ -21,7 +21,9 @@ app = app.replace(workerRe, (_, name) => {
   return `__cbWorker(${JSON.stringify(name)})`;
 });
 for (const n of used) {
-  if (/\bimport\b|\bexport\b/.test(readFileSync(join(assets, n), 'utf8'))) throw new Error(`${n} is a module, cannot run as a classic worker`);
+  // Statements only: the words themselves can appear in strings (e.g. an exported file's header).
+  const src = readFileSync(join(assets, n), 'utf8');
+  if (/(?:^|[;}\n])\s*(?:import\s*[\w{*"'`]|export\s*[\w{*])|\bimport\s*\(|\bimport\.meta\b/.test(src)) throw new Error(`${n} is a module, cannot run as a classic worker`);
 }
 const sources = Object.fromEntries([...used].map((n) => [n, readFileSync(join(assets, n), 'utf8')]));
 const prelude =
