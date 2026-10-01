@@ -22,6 +22,7 @@ Tests are in `tests/` (`npm test`, 85 tests) and `e2e/run.mjs` (`npm run e2e`, 3
 | Board and case air | 6.7 K | 19.5 K | 24.3 K |
 
   The two 3D solvers agree within 2–5 K, and both run 4–18 K hotter than the 1D model. Not fully like-for-like: the 3D figures are volume means that include stagnant cells, while the 1D figure assumes even through-flow. Airflow agrees better: OpenFOAM vs the 1D model is −30 % for the CPU cooler fan, −7 % PSU, +3 % GPU card fan and −10 % GPU radiator. Recirculation of warm air into the fans is 7–15 %. [inference] The 1D model's main error is its perfectly mixed zones and even flow through each part, not the fan curves. Part temperatures, and the trade-offs built on them, should be read with this offset until a prototype is measured.
+- **The 1D model also ranks designs differently from the 3D sim.** For 9 designs spread across each design space (in-app 3D sim, 12 k cells, 2 s of flow, solved fan speeds), the rank correlation of tightest-part headroom between 1D and 3D is 0.40 for the default parts and −0.08 for a tower cooler with an air-cooled GPU. The two models often disagree on which part is tightest: in 3D the board and case air limit many designs, where 1D names the GPU core or PSU intake. The explorer's thermal axis comes from the 1D model, so **its frontier is not reliable until the 1D model's mixing assumption is fixed, or the frontier is re-scored in 3D.** [inference] The short, coarse 3D runs add noise, but the gaps (10–25 K) are well beyond the ±55 % gain uncertainty, and OpenFOAM agrees with the 3D sim on the default design.
 - **Leakage cannot be identified from prototype measurements on the default design.** The fit reports it as not identifiable instead of inventing a value.
 
 ## 0. Audit of iteration 1
@@ -108,7 +109,8 @@ Tests are in `tests/` (`npm test`, 85 tests) and `e2e/run.mjs` (`npm run e2e`, 3
 ## Carried over
 
 - The OpenFOAM reference meshes only the air inside the case (no room around it), on a stair-stepped mesh at 6–12 mm. A snapped mesh needs the vent/wall junction cleaned up first; room air needs a larger domain.
-- Use the reference to correct the 1D model (mixing in the zones, uneven flow through parts), then re-check the explorer's ranking.
+- Use the reference to correct the 1D model (mixing in the zones, uneven flow through parts), or re-score the explorer's frontier with the 3D sim, then re-check the ranking.
+- The GPU connector's local reservation in the packer is dropped: box thickness is set by the tallest rectangle either way, and the shrinkwrapped shell already uses the local plug box, so the expected gain is about zero.
 - Orientation by local flow direction; stiffening ribs.
 - Iteration-1 partials still open: local GPU-connector reservation in the packer, exhaust placement and overpressure not optimised, bridging radius 65 mm instead of 90.
 - Every coefficient in the acoustic and structure models is an estimate. None was checked against a cited source or a measurement in this iteration.
