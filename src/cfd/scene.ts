@@ -205,7 +205,11 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
     const area = Math.max(h * h, crossCells * h * h); // mm²
     const speed = (flow * 1e9) / count / area;
     const { vmax, a0 } = fanForcing(spec, area, layers, h);
-    fans.push({ cells: Int32Array.from(usable), axis: ax, sign, speed, vmax, a0, center: toGrid(centreW), swirl: SWIRL, group, layers, pmaxPa: spec.maxPressureMmH2O * MMH2O_TO_PA });
+    // At the design's solved speed (fan laws: free-air speed ∝ s, stall pressure ∝ s²); a fan
+    // that is off (semi-passive PSU) is an open disk.
+    const s = groupFlow(group)?.speed ?? 1;
+    if (s > 0.02)
+      fans.push({ cells: Int32Array.from(usable), axis: ax, sign, speed, vmax: vmax * s, a0: a0 * s * s, center: toGrid(centreW), swirl: SWIRL, group, layers, pmaxPa: spec.maxPressureMmH2O * MMH2O_TO_PA * s * s });
     geom.fans.push({ slab, center: centreW, axis: ax, sign, radius, group, spec, count });
     return usable;
   };

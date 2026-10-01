@@ -522,7 +522,7 @@ ${fans
                     {
                         type        fan;
                         patchType   cyclic;
-                        jumpTable   table ((0 ${fmt(f.blow * f.pmax)}) (${fmt(f.umax)} 0));
+                        jumpTable   table ((0 ${fmt(f.blow * f.pmax)}) (${fmt(Math.max(f.umax, 1e-3))} 0));
                         value       uniform 1e5;
                     }
                 }

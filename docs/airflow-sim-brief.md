@@ -65,3 +65,13 @@ In a full case the radiator's air temperature rise agrees with the fan-curve mod
 **Structures.** The optimiser tries exhaust deflectors, intake ducts, radiator fan reversals and internal partitions (or removing the design's own), and keeps a change only when it lifts the tightest part's margin by more than 3 % of its budget; walls that make no difference in 3D are dropped. Bell-mouth inlets, diffusers, turning vanes and vortex generators act on features smaller than a grid cell, so they are listed as needing a finer reference simulation and never claimed.
 
 **Recirculation test, recalibrated.** An exhaust beside an intake: the intake air is +8.3 K over room without a deflector, +2.8 K with one (before calibration: +8.0 K and +2.0 K).
+
+## Update, iteration 2 (see docs/iteration-2-brief.md and docs/iteration-2-audit.md)
+
+**Fan speeds and noise.** Fans no longer run flat out: each design's fan speeds are solved for the coolest result within the noise budget (or the quietest with every part safe), and the 3D simulation runs at those speeds (free-air speed × s, stall pressure × s²). At the same speeds the 3D simulation runs the default design's parts 3.5–13 K hotter than the 1D model (GPU core +7 K, case air over the board +13 K); which is closer to reality is open until a reference or a prototype exists.
+
+**Flow-quality metrics.** At the end of a run the simulation reports, per intake fan, the air temperature rise at the fan as a share of the heat sources' heat-weighted mean rise (the share of recirculated exhaust), and, per radiator core and fin stack, the uniformity index 1 − Σ|v − v̄| / (2·n·|v̄|). On the default design: GPU radiator core 0.90, CPU fins 0.61.
+
+**Structures below the grid.** Bell-mouth inlets, exit diffusers, deeper plenums and expansion-chamber silencers are estimated in the 1D airflow and noise model (Structures panel), with the fan speeds solved again for each; they are flagged as needing a reference and stay off the explorer. Turning vanes and vortex generators remain reference-CFD only.
+
+**Independent reference.** The OpenFOAM export meshes cleanly in openfoam.com v2312 (CI job, 36 k cells, checkMesh OK) but buoyantSimpleFoam diverges after four iterations (floating-point exception in the p_rgh solve); the cause is open. Until a converged reference or a prototype measurement exists, the 3D simulation's calibration is still only against the app's own fan-curve model.
