@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { HosePath } from '../solver/hoses';
 import type { DesignConfig } from '../model/types';
 import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, localBoxToWorld, localToWorld, type Vec3 } from '../solver/geometry';
@@ -168,36 +169,14 @@ export function buildExtra(b: PartBuilder, part: PlacedPart) {
   b.box(part, [0, 0, 0], part.size, mat(PART_COLORS.extra, { rough: 0.7 }));
 }
 
-/** Two AIO hoses from a start point/direction to a radiator's port end, kept inside `inside`. */
-export function buildTubes(
-  group: THREE.Group,
-  map: WorldMap,
-  from: Vec3,
-  fromDir: THREE.Vector3,
-  rad: PlacedPart,
-  inside: THREE.Box3,
-  reachOut: number,
-) {
-  const r = rad.radiator!;
-  const material = mat('#141518', { rough: 0.85 });
-  const box = inside.clone().expandByScalar(-7);
-  const clamp = (v: THREE.Vector3) => v.clamp(box.min, box.max);
-  const portReach = Math.max(12, Math.min(40, r.portClearance * 0.9));
-  for (const off of [-9, 9]) {
-    const port = map.point(localToWorld(rad.frame, rad.body, [rad.size[0] + 4, rad.size[1] / 2 + off * 1.5, r.coreThickness / 2]));
-    const portOut = map
-      .point(localToWorld(rad.frame, rad.body, [rad.size[0] + 40, rad.size[1] / 2 + off * 1.5, r.coreThickness / 2]))
-      .sub(port)
-      .normalize();
-    const side = new THREE.Vector3(1, 0, 0);
-    if (Math.abs(side.dot(fromDir)) > 0.9) side.set(0, 1, 0);
-    const a = map.point(from).addScaledVector(side, off * 0.8);
-    const b = clamp(a.clone().addScaledVector(fromDir, Math.max(12, Math.min(35, reachOut * 0.9))));
-    const c = clamp(port.clone().addScaledVector(portOut, portReach));
-    const mid = clamp(b.clone().add(c).multiplyScalar(0.5));
-    const curve = new THREE.CatmullRomCurve3([a, b, mid, c, port], false, 'centripetal');
-    const geo = new THREE.TubeGeometry(curve, 64, 6, 10, false);
-    group.add(new THREE.Mesh(geo, material));
+/** AIO hoses and the GPU power cable along the solver's routed paths. */
+export function buildRouted(group: THREE.Group, map: WorldMap, paths: HosePath[]) {
+  const hose = mat('#141518', { rough: 0.85 });
+  const cable = mat('#2a2b30', { rough: 0.7 });
+  for (const h of paths) {
+    const curve = new THREE.CatmullRomCurve3(h.points.map((p) => map.point(p)), false, 'centripetal');
+    const geo = new THREE.TubeGeometry(curve, Math.max(24, h.points.length * 2), h.radius, 10, false);
+    group.add(new THREE.Mesh(geo, h.kind === 'cable' ? cable : hose));
   }
 }
 

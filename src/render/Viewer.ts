@@ -5,8 +5,8 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { CSS2DObject, CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import type { DesignConfig } from '../model/types';
 import type { Design, PlacedPart } from '../solver/evaluate';
-import { axisOf, localToWorld, signOf, wallAxes, type Vec3 } from '../solver/geometry';
-import { boardStack } from '../solver/items';
+import { axisOf, signOf, wallAxes, type Vec3 } from '../solver/geometry';
+import { routedPaths } from '../solver/hoses';
 import type { ShellMesh } from '../solver/shrinkwrap';
 import type { SimFrame } from '../cfd/run';
 import type { Shaping } from '../cfd/scene';
@@ -18,7 +18,7 @@ import {
   buildGpu,
   buildPsu,
   buildRadiator,
-  buildTubes,
+  buildRouted,
   clearanceGhost,
   PART_COLORS,
   PartBuilder,
@@ -479,25 +479,9 @@ export class CaseViewer {
       this.labelGroup.add(label);
     }
 
-    // ---- AIO hoses
-    const board = design.parts.find((p) => p.kind === 'board');
-    const gpu = design.parts.find((p) => p.kind === 'gpu');
-    const radCpu = design.parts.find((p) => p.kind === 'rad-cpu');
-    const radGpu = design.parts.find((p) => p.kind === 'rad-gpu');
+    // ---- AIO hoses and the GPU power cable
     const tubes = new THREE.Group();
-    const interiorBox = map.box({ min: [0, 0, 0], max: design.interior });
-    if (board && radCpu && cfg.parts.cooler.kind === 'aio') {
-      const s = boardStack(cfg, extraGap);
-      const bd = cfg.parts.board;
-      const top: Vec3 = [bd.socketU + 20, s.pcbDv + bd.socketV, s.surface + bd.socketStack + cfg.parts.cooler.height * 0.7];
-      buildTubes(tubes, map, localToWorld(board.frame, board.body, top), map.dir(4), radCpu, interiorBox, 30);
-    }
-    if (gpu && radGpu && cfg.parts.gpu.cooling === 'aio') {
-      const g = cfg.parts.gpu;
-      const exit: Vec3 = g.tubeExit === 'end' ? [g.length, g.height * 0.55, g.thickness * 0.6] : [g.length * 0.62, g.height, g.thickness * 0.6];
-      const outDir = map.dir(g.tubeExit === 'end' ? gpu.frame.d[0] : gpu.frame.d[1]);
-      buildTubes(tubes, map, localToWorld(gpu.frame, gpu.body, exit), outDir, radGpu, interiorBox, g.tubeClearance);
-    }
+    buildRouted(tubes, map, routedPaths(design, cfg));
     this.partsGroup.add(tubes);
     this.partHomes.push({ obj: tubes, home: new THREE.Vector3(), dir: new THREE.Vector3() });
 
@@ -526,7 +510,7 @@ export class CaseViewer {
   }
 
   /** Dimension lines, ground and feet around an outer bounding box (world space). */
-  private layoutAround(b: THREE.Box3, feet: number) {
+  private layoutAround(b: THREE.Box3, feet: number, positions?: Float32Array) {
     this.clear(this.dimGroup);
     for (const c of [...this.shell.children]) if (c.userData.foot) this.shell.remove(c);
     const ext = b.getSize(new THREE.Vector3());
@@ -535,19 +519,46 @@ export class CaseViewer {
     this.buildDims(ext, feet);
     if (feet > 0) {
       const footMat = new THREE.MeshStandardMaterial({ color: '#1b1c1f', roughness: 0.9 });
-      const fx = Math.max(0, ext.x / 2 - 25);
-      const fz = Math.max(0, ext.z / 2 - 25);
-      for (const sx of [-1, 1])
-        for (const sz of [-1, 1]) {
-          const f = new THREE.Mesh(new THREE.CylinderGeometry(10, 10, feet, 20), footMat);
-          f.position.set(ctr.x + sx * fx, b.min.y - feet / 2, ctr.z + sz * fz);
-          f.userData.foot = true;
-          this.shell.add(f);
-        }
+      for (const [x, z] of this.footSpots(b, ctr, ext, positions)) {
+        const f = new THREE.Mesh(new THREE.CylinderGeometry(10, 10, feet, 20), footMat);
+        f.position.set(x, b.min.y - feet / 2, z);
+        f.userData.foot = true;
+        this.shell.add(f);
+      }
     }
     const r = Math.hypot(ext.x, ext.z) * 0.85;
     this.ground.scale.set(r * 1.6, r * 1.6, 1);
     this.ground.position.set(ctr.x, b.min.y - feet - 0.5, ctr.z);
+  }
+
+  /**
+   * Foot positions: inset corners of the box, or for a wrapped shell the extreme corners of the
+   * flat patch it actually stands on (vertices within 1.5 mm of its lowest point), pulled inward.
+   */
+  private footSpots(b: THREE.Box3, ctr: THREE.Vector3, ext: THREE.Vector3, positions?: Float32Array): [number, number][] {
+    const corners: [number, number][] = [];
+    if (!positions) {
+      const fx = Math.max(0, ext.x / 2 - 25);
+      const fz = Math.max(0, ext.z / 2 - 25);
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) corners.push([ctr.x + sx * fx, ctr.z + sz * fz]);
+      return corners;
+    }
+    const pts: [number, number][] = [];
+    for (let i = 0; i < positions.length; i += 3) if (positions[i + 1] < b.min.y + 1.5) pts.push([positions[i], positions[i + 2]]);
+    if (pts.length < 3) return this.footSpots(b, ctr, ext);
+    const cx = pts.reduce((s2, p) => s2 + p[0], 0) / pts.length;
+    const cz = pts.reduce((s2, p) => s2 + p[1], 0) / pts.length;
+    for (const sx of [-1, 1])
+      for (const sz of [-1, 1]) {
+        let best = pts[0];
+        for (const p of pts) if (sx * p[0] + sz * p[1] > sx * best[0] + sz * best[1]) best = p;
+        const dx = cx - best[0];
+        const dz = cz - best[1];
+        const l = Math.hypot(dx, dz) || 1;
+        const k = Math.min(18, l);
+        corners.push([best[0] + (dx / l) * k, best[1] + (dz / l) * k]);
+      }
+    return corners;
   }
 
   /**
@@ -593,7 +604,7 @@ export class CaseViewer {
     shell.renderOrder = 2;
     shell.userData.organic = true;
     this.shell.add(shell);
-    this.layoutAround(map.box(mesh.bbox), design.feet);
+    this.layoutAround(map.box(mesh.bbox), design.feet, pos);
     this.needsRender = true;
   }
 

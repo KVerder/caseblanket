@@ -1,3 +1,4 @@
+import { closeRadius } from '../solver/shrinkwrap';
 import { FINISHES, MATERIALS, VENT_STYLES } from '../model/presets';
 import type { DesignConfig, PanelName, Preferences, TopologyId } from '../model/types';
 import { produce } from '../state/config';
@@ -63,22 +64,35 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
       </Section>
 
       <Section title="Shape & finish">
-        <Slider
-          id="organic"
-          label="Shape"
-          value={p.organic}
-          min={0}
-          max={1}
-          step={0.05}
-          left="Straight box"
-          right="Organic shrinkwrap"
-          format={(v) => (v === 0 ? 'Box' : v < 0.35 ? 'Softened' : v < 0.75 ? 'Flowing' : 'Organic')}
-          onChange={(v) => set('organic', v)}
+        <Segmented
+          label="Shell"
+          value={p.shell}
+          options={[
+            { value: 'wrap', label: 'Shrinkwrap' },
+            { value: 'box', label: 'Straight box' },
+          ]}
+          onChange={(v) => set('shell', v)}
         />
-        <p className="muted small">
-          The shell is pulled around the parts like shrink film, filling the hollows between them. More organic means rounder edges,
-          which cost a few millimetres per side. Edge style and radius shape the straight end of the slider.
-        </p>
+        {p.shell === 'wrap' && (
+          <>
+            <Slider
+              id="organic"
+              label="Smoothness"
+              value={p.organic}
+              min={0}
+              max={1}
+              step={0.05}
+              left="Tight, straight faces"
+              right="Smooth, sweeping"
+              format={(v) => `bridges ${Math.round(2 * closeRadius(v))} mm`}
+              onChange={(v) => set('organic', v)}
+            />
+            <p className="muted small">
+              The shell is pulled tight around the parts, their air gaps, the AIO hoses and the GPU power cable. Smoothness bridges
+              gaps between parts up to the width shown and rounds the edges; the results show the litres it adds.
+            </p>
+          </>
+        )}
         <Segmented
           label="Edges"
           value={p.edgeStyle}

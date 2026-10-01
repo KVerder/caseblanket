@@ -1,5 +1,6 @@
 import { MATERIALS, VENT_STYLES } from '../model/presets';
 import type { DesignConfig, FanSpec, RadiatorSpec, TopologyId } from '../model/types';
+import { HOSE_MIN_BEND, hosePaths, minBendRadius, pathLength } from './hoses';
 import { perforatedPlateZeta, solveFlow, type FanGroupInput, type FlowResult, type LossTerm } from './airflow';
 import {
   axisOf,
@@ -549,28 +550,6 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       checks.push({ level: 'ok', text: `Riser path ≈ ${Math.round(path)} mm fits the ${prefs.riserLength} mm riser.` });
     }
   }
-  const tubeCheck = (label: string, from: Vec3, rad: PlacedPart | undefined, length: number | undefined) => {
-    if (!rad || !length) return;
-    const r = rad.radiator!;
-    const port = localToWorld(rad.frame, rad.body, [r.length, r.width / 2, r.coreThickness / 2]);
-    const d = Math.abs(from[0] - port[0]) + Math.abs(from[1] - port[1]) + Math.abs(from[2] - port[2]) + 40;
-    checks.push(
-      d > length
-        ? { level: 'error', text: `${label} tubes need ≈ ${Math.round(d)} mm, only ${length} mm available.` }
-        : { level: 'ok', text: `${label} tube run ≈ ${Math.round(d)} mm of ${length} mm.` },
-    );
-  };
-  if (cooler.kind === 'aio') {
-    const pump: Vec3 = [pcbOrigin[0] + bp.socketU, pcbOrigin[1] + bp.socketV, pcbOrigin[2] + bs.surface + bp.socketStack + cooler.height / 2];
-    tubeCheck('CPU AIO', pump, parts.find((p) => p.kind === 'rad-cpu'), cooler.tubeLength);
-  }
-  if (gpuSpec.cooling === 'aio') {
-    const exit =
-      gpuSpec.tubeExit === 'end'
-        ? localToWorld(gpu.frame, gpu.body, [gpuSpec.length, gpuSpec.height / 2, gpuSpec.thickness / 2])
-        : localToWorld(gpu.frame, gpu.body, [gpuSpec.length * 0.6, gpuSpec.height, gpuSpec.thickness / 2]);
-    tubeCheck('GPU AIO', exit, parts.find((p) => p.kind === 'rad-gpu'), gpuSpec.tubeLength);
-  }
   if (!acAtWall) checks.push({ level: 'info', text: 'PSU AC inlet is inside the case — route it to the back with a short internal extension cable (common in small cases).' });
   if (bs.coolerOverhangsRear) checks.push({ level: 'warn', text: 'CPU cooler overhangs the rear edge of the board.' });
   for (const p of radParts) {
@@ -611,7 +590,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     });
   }
 
-  return {
+  const design: Design = {
     id: `${topology}-${profile.id}-${index}`,
     topology,
     effectiveTopology: two && !hasB ? (topology === 'sandwich' ? 'flat' : 'direct') : topology,
@@ -637,6 +616,32 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     compactCost: 0,
     tags: [],
   };
+  hoseChecks(design, cfg);
+  design.invalid = design.checks.some((c) => c.level === 'error');
+  return design;
+}
+
+/** AIO hose runs along their routed paths: length against the hose, tightest bend against the kink radius. */
+function hoseChecks(design: Design, cfg: DesignConfig) {
+  const paths = hosePaths(design, cfg);
+  const loops: { loop: 'cpu' | 'gpu'; label: string; length?: number }[] = [
+    { loop: 'cpu', label: 'CPU AIO', length: cfg.parts.cooler.kind === 'aio' ? cfg.parts.cooler.tubeLength : undefined },
+    { loop: 'gpu', label: 'GPU AIO', length: cfg.parts.gpu.cooling === 'aio' ? cfg.parts.gpu.tubeLength : undefined },
+  ];
+  for (const l of loops) {
+    const ps = paths.filter((h) => h.loop === l.loop);
+    if (!ps.length || !l.length) continue;
+    // ~20 mm per hose disappears into the fittings.
+    const need = Math.max(...ps.map(pathLength)) + 20;
+    design.checks.push(
+      need > l.length
+        ? { level: 'error', text: `${l.label} tubes need ≈ ${Math.round(need)} mm, only ${l.length} mm available.` }
+        : { level: 'ok', text: `${l.label} tube run ≈ ${Math.round(need)} mm of ${l.length} mm.` },
+    );
+    const bend = Math.min(...ps.map(minBendRadius));
+    if (bend < HOSE_MIN_BEND)
+      design.checks.push({ level: 'warn', text: `${l.label} tubes bend to ≈ ${Math.round(bend)} mm radius (kink risk below ~${HOSE_MIN_BEND} mm).` });
+  }
 }
 
 const isDirectTopo = (t: TopologyId) => t === 'direct' || t === 'direct-stack';

@@ -2,7 +2,7 @@ import type { DesignConfig, TopologyId } from '../model/types';
 import { evaluate, type Design } from './evaluate';
 import { buildItems, isDirect, isTwoLayer, PROFILES, type Profile } from './items';
 import { pack } from './pack';
-import { wrapMetrics } from './shrinkwrap';
+import { isWrap, wrapMetrics } from './shrinkwrap';
 
 export interface SolveOptions {
   beamWidth?: number;
@@ -101,7 +101,11 @@ export function solve(cfg: DesignConfig, opts: SolveOptions = {}): SolveResult {
   const ranked = rankDesigns(all, cfg);
   const designs = shortlist(ranked, maxResults);
   // Organic shells: measure the shrinkwrapped outline of every shortlisted design (coarse grid).
-  if ((cfg.prefs.organic ?? 0) > 0 && opts.wrapMetrics !== false) for (const d of designs) d.wrap = wrapMetrics(d, cfg, cfg.prefs.organic);
+  if (isWrap(cfg) && opts.wrapMetrics !== false)
+    for (const d of designs) {
+      d.wrap = wrapMetrics(d, cfg, cfg.prefs.organic);
+      if (cfg.prefs.organic > 0.02) d.wrap.smoothingL = Math.max(0, d.wrap.volumeL - wrapMetrics(d, cfg, 0).volumeL);
+    }
   return { designs, stats: { runs, evaluated: all.length, ms: performance.now() - t0 } };
 }
 

@@ -75,6 +75,7 @@ export function Summary({ d, cfg }: { d: Design; cfg: DesignConfig }) {
       <p className="muted small">
         {capitalise(TOPOLOGY_LABELS[d.effectiveTopology].split(' — ')[1])}. {d.profile.label}. {mat?.label}, {cfg.prefs.wallThickness} mm walls
         {ol.wrapped ? `, shrinkwrapped (box envelope ${mm(d.world.width)} × ${mm(d.world.height)} × ${mm(d.world.depth)}, ${d.volumeL.toFixed(1)} L)` : ''}
+        {d.wrap?.smoothingL !== undefined ? `; smoothness adds ${d.wrap.smoothingL.toFixed(1)} L` : ''}
         {d.feet ? `, ${d.feet} mm feet for the bottom vents` : ''}.
       </p>
     </section>

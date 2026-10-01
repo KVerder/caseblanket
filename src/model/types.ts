@@ -103,6 +103,8 @@ export interface GpuSpec {
   cardFanSpec: FanSpec;
   /** Power connector on the top edge needs straight cable run before any bend. */
   connectorClearance: number;
+  /** Connector position along the card from the bracket, as a share of its length (estimate when absent: 0.7). */
+  connectorPos?: number;
   radiator?: RadiatorSpec;
   tubeLength?: number;
   tubeExit: TubeExit;
@@ -160,6 +162,8 @@ export interface VentStyle {
   openRatio: number;
 }
 
+export type ShellKind = 'box' | 'wrap';
+
 export interface Preferences {
   /** 0 = compactness only, 1 = airflow only. */
   airflowPriority: number;
@@ -167,7 +171,9 @@ export interface Preferences {
   thinnessPriority: number;
   /** Designs whose worst heat path gets less than this share of the airflow it needs are ranked last. */
   minAirflowAdequacy: number;
-  /** 0 = straight box, 1 = organic shrinkwrap around the parts. */
+  /** Straight box, or a shell shrinkwrapped around the parts, hoses and clearances. */
+  shell: ShellKind;
+  /** Shrinkwrap smoothness: 0 = tight with straight faces, 1 = smooth, bridging gaps up to ~180 mm. */
   organic: number;
   edgeStyle: EdgeStyle;
   edgeRadius: number;

@@ -1,3 +1,4 @@
+import { isWrap } from '../solver/shrinkwrap';
 import { useEffect, useRef, useState } from 'react';
 import type { DesignConfig } from '../model/types';
 import { DEFAULT_PRINT, planPieces, type PrintOptions } from '../print/printable';
@@ -54,7 +55,7 @@ export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: Des
       </div>
       <div className="catalog-body print-body">
         <p className="small">
-          The {cfg.prefs.organic > 0 ? 'shrinkwrapped' : 'box'} shell as solid walls with the vent holes and I/O cut-outs cut through, split into
+          The {isWrap(cfg) ? 'shrinkwrapped' : 'box'} shell as solid walls with the vent holes and I/O cut-outs cut through, split into
           pieces that fit your printer. One closed STL per piece, zipped, in millimetres.
         </p>
         <span className="field-label">Print bed (mm)</span>

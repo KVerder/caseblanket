@@ -3,7 +3,7 @@ import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { DesignConfig } from '../model/types';
 import type { Design } from '../solver/evaluate';
-import { meshShell, type ShellMesh } from '../solver/shrinkwrap';
+import { isWrap, meshShell, type ShellMesh } from '../solver/shrinkwrap';
 import { WorldMap } from './mapping';
 import { shellGeometry } from './Viewer';
 
@@ -35,7 +35,7 @@ function strip(g: THREE.BufferGeometry): THREE.BufferGeometry {
  * Vents and openings are not cut — the SVG panel drawings carry those.
  */
 export function shellSTL(design: Design, cfg: DesignConfig): Blob {
-  if (cfg.prefs.organic > 0) return organicSTL(design, cfg);
+  if (isWrap(cfg)) return organicSTL(design, cfg);
   const map = new WorldMap(cfg.prefs.orientation, design.interior);
   const ext = map.size(design.exterior);
   const inn = map.size(design.interior);

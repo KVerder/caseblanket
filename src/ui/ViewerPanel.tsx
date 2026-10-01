@@ -1,3 +1,4 @@
+import { isWrap } from '../solver/shrinkwrap';
 import { useEffect, useRef, useState } from 'react';
 import type { DesignConfig } from '../model/types';
 import { CaseViewer, DEFAULT_VIEW, type ViewOptions, type ViewPreset } from '../render/Viewer';
@@ -62,7 +63,7 @@ export function ViewerPanel(props: {
     // Refit the camera only when the case outline changes a lot or the orientation flips.
     const e = props.design.exterior;
     const key = `${props.cfg.prefs.orientation}|${Math.round(Math.max(...e) / 60)}`;
-    const organic = props.cfg.prefs.organic > 0;
+    const organic = isWrap(props.cfg);
     viewer.current.setDesign(props.design, props.cfg, key !== lastKey.current, organic);
     lastKey.current = key;
     shownShell.current = null;
@@ -71,7 +72,7 @@ export function ViewerPanel(props: {
   const shownShell = useRef<ShellResult | null>(null);
   useEffect(() => {
     if (!viewer.current || !props.design) return;
-    if (props.cfg.prefs.organic <= 0) {
+    if (!isWrap(props.cfg)) {
       if (shownShell.current) viewer.current.setShell(null);
       shownShell.current = null;
       return;

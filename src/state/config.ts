@@ -16,7 +16,11 @@ function mergeDefaults<T>(base: T, over: unknown): T {
 }
 
 export function normalizeConfig(raw: unknown): DesignConfig {
-  return mergeDefaults(defaultConfig(), raw);
+  const cfg = mergeDefaults(defaultConfig(), raw);
+  // Saves from before the Shell setting: a Shape slider at 0 meant the straight box.
+  const prefs = (raw as { prefs?: { shell?: unknown; organic?: unknown } } | null)?.prefs;
+  if (prefs && prefs.shell === undefined && typeof prefs.organic === 'number' && prefs.organic <= 0) cfg.prefs.shell = 'box';
+  return cfg;
 }
 
 export function loadStoredConfig(): DesignConfig | null {

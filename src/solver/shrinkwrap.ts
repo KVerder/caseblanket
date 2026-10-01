@@ -1,23 +1,27 @@
 import { MATERIALS } from '../model/presets';
 import type { DesignConfig } from '../model/types';
 import type { Design } from './evaluate';
+import { connectorBox, gpuWrapClearance, hoseBox, hoseDistance, routedPaths, type HosePath } from './hoses';
 import { axisOf, signOf, wallAxes, type Box, type Vec3 } from './geometry';
 
 /**
  * Shrinkwrap shell, meshed with surface nets.
  *
- * 1. X = union of every part's body box (rounded a little) and clearance box (rounded more —
- *    it is air: fan gaps, cable room), plus a flat plate behind the rear I/O.
+ * 1. X = union of every part's body box and clearance box (both rounded a little; clearances are
+ *    air the parts need: fan gaps, cable room), the routed AIO hoses and GPU power cable, plus a
+ *    flat plate behind the rear I/O.
  * 2. Closing of X with a ball of radius R (dilate by R, then erode by R), computed with a 3D
- *    Euclidean distance transform. It fills the hollows between parts like a shrink film
- *    pulled over them, without inflating flat faces; R → ∞ would give the convex hull.
+ *    Euclidean distance transform. It bridges gaps narrower than about 2R like a shrink film
+ *    pulled over the parts, without inflating flat faces; R → ∞ would give the convex hull.
  * 3. The outer surface is the closing offset by the wall plus a softness that rounds convex
  *    edges. The body rounding r cuts a box corner by at most 0.73·r (r·(√3−1)), which the softness covers,
  *    so no part body ever comes closer than one wall to the outside.
  *
- *   organic = 0  → the straight box the solver sized (rounded/chamfered by the edge settings)
- *   organic = 1  → R = 220 mm, sweeping fills; convex edges rounded by ~8 mm (costs ~3 mm per side)
- *   in between   → the two fields blended; both keep every part inside, so the blend does too.
+ * Shell 'box' is the straight box the solver sized. Shell 'wrap' uses the smoothness s = organic:
+ *   s = 0  → R = 15 mm: tight, straight faces, only cracks between parts bridged
+ *   s = 1  → R = 65 mm: gaps up to ~130 mm bridged, convex edges rounded by ~3 mm (costs ~3 mm per side)
+ * The box is never blended in: every litre of the wrap is parts, clearances, hoses, the wall
+ * and the bridging the smoothness asks for.
  *
  * All coordinates are solver coordinates (u, v, t) in mm, interior from 0 to design.interior.
  */
@@ -37,12 +41,19 @@ export interface WrapMetrics {
   thickness: number;
   volumeL: number;
   weightKg: number;
+  /** Litres the smoothness adds over the tightest wrap (smoothness 0). */
+  smoothingL?: number;
 }
 
 const BODY_ROUND = 3.5;
-const CLEAR_ROUND = 30;
-const SOFTNESS = 2.5;
-const CLOSE_RADIUS = 220;
+const CLEAR_ROUND = BODY_ROUND;
+const SOFT_MIN = 0.5;
+const SOFT_RANGE = 2.5;
+const CLOSE_MIN = 15;
+const CLOSE_RANGE = 50;
+
+export const isWrap = (cfg: DesignConfig) => cfg.prefs.shell !== 'box';
+export const closeRadius = (s: number) => CLOSE_MIN + CLOSE_RANGE * Math.min(1, Math.max(0, s));
 
 function sdBox(p: Vec3, b: Box, r: number): number {
   let out = 0;
@@ -78,15 +89,20 @@ export function boxField(design: Design, cfg: DesignConfig): Field {
   };
 }
 
-function wrapShapes(design: Design, o: number) {
+function wrapShapes(design: Design, cfg: DesignConfig, o: number) {
+  // Rounding only ever shrinks a box, so the body rounding is covered by the softness (0.73·r ≤ soft − wall).
   const rb = BODY_ROUND * o;
   const rc = CLEAR_ROUND * o;
   const half = (b: Box) => Math.min(...[0, 1, 2].map((a) => (b.max[a] - b.min[a]) / 2));
   const shapes: { box: Box; r: number }[] = [];
   for (const part of design.parts) {
     shapes.push({ box: part.body, r: Math.min(rb, half(part.body)) });
-    shapes.push({ box: part.clearance, r: Math.min(rc, half(part.clearance)) });
+    // The card's connector room is local (the solver reserves the whole edge, the wrap only the plug).
+    const clear = part.kind === 'gpu' ? (gpuWrapClearance(design, cfg) ?? part.clearance) : part.clearance;
+    shapes.push({ box: clear, r: Math.min(rc, half(clear)) });
   }
+  const conn = connectorBox(design, cfg);
+  if (conn) shapes.push({ box: conn, r: Math.min(rb, half(conn)) });
   const rear = design.parts.filter((p) => p.kind === 'board' || (p.kind === 'gpu' && p.body.min[0] < 2));
   if (rear.length) {
     const b: Box = { min: [0, Infinity, Infinity], max: [20, -Infinity, -Infinity] };
@@ -185,10 +201,16 @@ function forEachPoint(g: Grid, fn: (p: Vec3, id: number) => void) {
       }
 }
 
-function unionField(shapes: { box: Box; r: number }[]): Field {
+function unionField(shapes: { box: Box; r: number }[], hoses: HosePath[]): Field {
+  const boxes = hoses.map(hoseBox);
   return (q) => {
     let d = Infinity;
     for (const s of shapes) d = Math.min(d, sdBox(q, s.box, s.r));
+    for (let i = 0; i < hoses.length; i++) {
+      // Cheap bound first: the hose can't be nearer than its bounding box.
+      const lb = sdBox(q, boxes[i], 0);
+      if (lb < d) d = Math.min(d, hoseDistance(hoses[i], q));
+    }
     return d;
   };
 }
@@ -246,32 +268,26 @@ function closingGrid(design: Design, union: Field, R: number, fineCell: number):
 
 /** Outer-surface field of the shell on a grid (negative inside). */
 export function shellGrid(design: Design, cfg: DesignConfig, organic: number, cell: number): Grid {
-  const o = Math.min(1, Math.max(0, organic));
+  const s = Math.min(1, Math.max(0, organic));
   const wall = design.wall;
-  const R = CLOSE_RADIUS * o;
-  const soft = wall + SOFTNESS * o + (o > 0 ? cell * 0.25 : 0);
+  const soft = wall + SOFT_MIN + SOFT_RANGE * s + cell * 0.35;
   const pad = soft + 3 * cell;
   const g = makeGrid([-pad, -pad, -pad], [design.interior[0] + pad, design.interior[1] + pad, design.interior[2] + pad], cell);
-  const fb = boxField(design, cfg);
-  if (o <= 0) {
+  if (!isWrap(cfg)) {
+    const fb = boxField(design, cfg);
     forEachPoint(g, (p, id) => (g.vals[id] = fb(p)));
     return g;
   }
-  const union = unionField(wrapShapes(design, o));
-  const closing = sampleGrid(closingGrid(design, union, R, cell));
-  forEachPoint(g, (p, id) => {
-    // min with the exact union: parts are always covered exactly; the closing only fills hollows.
-    const wrap = Math.min(union(p), closing(p)) - soft;
-    // The blend morphs box → wrap; min with the wrap keeps every part a wall inside
-    // even where the box's own corner rounding would come closer.
-    g.vals[id] = Math.min((1 - o) * fb(p) + o * wrap, wrap);
-  });
+  const union = unionField(wrapShapes(design, cfg, s), routedPaths(design, cfg));
+  const closing = sampleGrid(closingGrid(design, union, closeRadius(s), cell));
+  // min with the exact union: parts are always covered exactly; the closing only bridges gaps.
+  forEachPoint(g, (p, id) => (g.vals[id] = Math.min(union(p), closing(p)) - soft));
   return g;
 }
 
 /** Outer-surface field (negative inside), sampled from the shell grid. */
 export function shellField(design: Design, cfg: DesignConfig, organic: number, detail = 1): Field {
-  if (organic <= 0) return boxField(design, cfg);
+  if (!isWrap(cfg)) return boxField(design, cfg);
   return sampleGrid(shellGrid(design, cfg, organic, defaultCell(design, detail)));
 }
 

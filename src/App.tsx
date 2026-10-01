@@ -8,6 +8,7 @@ import type { Design } from './solver/evaluate';
 import type { SolveResult } from './solver/solve';
 import { encodeShare, initialConfig, IS_ARTIFACT, storeConfig } from './state/config';
 import { MeshClient, type ShellResult } from './state/meshClient';
+import { isWrap } from './solver/shrinkwrap';
 import { SolverClient } from './state/solverClient';
 import { ModelPanel } from './ui/ModelPanel';
 import { PartsPanel } from './ui/PartsPanel';
@@ -130,8 +131,9 @@ export default function App() {
   const [shell, setShell] = useState<{ for: Design; result: ShellResult } | null>(null);
   const [shaping, setShaping] = useState(false);
   const organic = cfg.prefs.organic;
+  const wrap = isWrap(cfg);
   useEffect(() => {
-    if (!design || organic <= 0) {
+    if (!design || !wrap) {
       setShaping(false);
       return;
     }
@@ -147,7 +149,7 @@ export default function App() {
         if (e.message !== 'superseded') setShaping(false);
       });
     // cfg is captured with the design it produced; re-mesh only when the design or shape changes.
-  }, [design, organic]);
+  }, [design, organic, wrap]);
   useEffect(() => () => meshClient.current?.dispose(), []);
 
   const share = async () => {
@@ -176,7 +178,7 @@ export default function App() {
     if (!design) return;
     const stem = `caseblanket-${Math.round(design.world.width)}x${Math.round(design.world.height)}x${Math.round(design.world.depth)}`;
     if (kind === 'stl') download(shellSTL(design, cfg), `${stem}-shell.stl`);
-    if (kind === 'svg' && cfg.prefs.organic > 0) return;
+    if (kind === 'svg' && isWrap(cfg)) return;
     if (kind === 'svg') download(new Blob([panelsSVG(design, cfg)], { type: 'image/svg+xml' }), `${stem}-panels.svg`);
     if (kind === 'json') download(new Blob([JSON.stringify({ config: cfg, design }, null, 2)], { type: 'application/json' }), `${stem}.json`);
     if (kind === 'png' && viewerRef.current) {
@@ -249,8 +251,8 @@ export default function App() {
                     <button role="menuitem" type="button" onClick={() => doExport('stl')}>
                       Shell surface, one piece <span>STL</span>
                     </button>
-                    <button role="menuitem" type="button" disabled={cfg.prefs.organic > 0} title={cfg.prefs.organic > 0 ? 'Flat panels exist only for the straight box (Shape slider at 0)' : undefined} onClick={() => doExport('svg')}>
-                      Flat panel drawings <span>{cfg.prefs.organic > 0 ? 'box only' : 'SVG'}</span>
+                    <button role="menuitem" type="button" disabled={isWrap(cfg)} title={isWrap(cfg) ? 'Flat panels exist only for the straight box (Shell: Box)' : undefined} onClick={() => doExport('svg')}>
+                      Flat panel drawings <span>{isWrap(cfg) ? 'box only' : 'SVG'}</span>
                     </button>
                     <button role="menuitem" type="button" onClick={() => doExport('png')}>
                       Picture of this view <span>PNG</span>
