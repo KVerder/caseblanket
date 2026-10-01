@@ -210,6 +210,22 @@ for (const [name, vp, opts] of [
     const diamonds = await ex.locator('path.check-pt').count();
     check(diamonds >= 1, `${name}: 3D check plots ${diamonds} simulated point(s) next to the model`);
   }
+  // Noise: the section reports dB(A); the explorer's noise view plots the quietest safe noise.
+  const db = Number((await page.locator('.noise .noise-big b').innerText()).trim());
+  check(db > 10 && db < 60, `${name}: noise section reports ${db} dB(A)`);
+  await ex.getByRole('radio', { name: 'Noise needed' }).click();
+  await page.waitForTimeout(300);
+  check(/dB\(A\)/.test((await ex.locator('.axis-label').nth(1).textContent()) ?? ''), `${name}: explorer switches to the noise-needed view`);
+  await ex.getByRole('radio', { name: /Cooling/ }).click();
+  if (!opts.touch) {
+    await page.getByRole('tab', { name: 'Tune' }).click();
+    await page.locator('#noise-budget').fill('25');
+    await page.waitForTimeout(2500);
+    await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+    const db25 = Number((await page.locator('.noise .noise-big b').innerText()).trim());
+    const over = /Over the 25 dB\(A\) budget/.test(await page.locator('.noise').innerText());
+    check(db25 <= 25.05 || over, `${name}: a 25 dB(A) budget gives ${db25} dB(A)${over ? ' (reported as over budget)' : ''}`);
+  }
   await ex.screenshot({ path: `${out}/${name}.png` });
   await ctx.close();
 }

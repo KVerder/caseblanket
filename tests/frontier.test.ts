@@ -34,3 +34,21 @@ describe('design-space frontier', () => {
     });
   }
 });
+
+describe('design-space frontier with a noise budget', () => {
+  for (const budget of [24, 30]) {
+    it(`has no frontier design beaten on size and margin at ${budget} dB(A), among designs that meet it`, () => {
+      const cfg = defaultConfig();
+      cfg.prefs.noiseBudgetDb = budget;
+      const r = solve(cfg, { wrapMetrics: false });
+      const ok = r.space.filter((d) => d.noise[cfg.prefs.loadProfile].feasible);
+      for (const d of ok) expect(d.noise[cfg.prefs.loadProfile].noise.spl).toBeLessThanOrEqual(budget + 1e-6);
+      const pts = spacePoints(ok, 'volume');
+      for (const f of frontier(pts))
+        for (const p of pts) {
+          const beats = (p.size < f.size - 1e-9 && p.margin >= f.margin) || (p.size <= f.size && p.margin > f.margin + 1e-9);
+          expect(beats).toBe(false);
+        }
+    });
+  }
+});

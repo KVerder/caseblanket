@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CfdThermal } from '../cfd/components';
-import type { DesignConfig } from '../model/types';
+import type { DesignConfig, LoadProfileId } from '../model/types';
 import { TOPOLOGY_LABELS, type Design } from '../solver/evaluate';
 import { frontier, sizeOf, type SizeAxis } from '../solver/frontier';
 import { CfdClient } from '../state/cfdClient';
@@ -10,11 +10,25 @@ interface Pt {
   d: Design;
   id: string;
   size: number;
+  /** The plotted value, higher is better: margin (share of budget) or −noise (dB). */
   margin: number;
+  /** Can't meet the noise budget (thermal view) or can't keep every part under its limit (noise view). */
+  out: boolean;
 }
+
+type YMode = 'margin' | 'noise';
 
 const PAD = { l: 48, r: 18, t: 22, b: 40 };
 const pct = (m: number) => `${Math.round(m * 100)} %`;
+
+/** Range of fan speeds a design runs at, e.g. "40–80 %". */
+function speedRange(d: Design, load: LoadProfileId): string {
+  const v = Object.values(d.noise[load].speeds);
+  if (!v.length) return '—';
+  const lo = Math.round(Math.min(...v) * 100);
+  const hi = Math.round(Math.max(...v) * 100);
+  return lo === hi ? `${lo} %` : `${lo}–${hi} %`;
+}
 
 /** Round, readable tick steps covering [lo, hi]. */
 function ticks(lo: number, hi: number, n = 5): number[] {
@@ -44,6 +58,8 @@ export function Explorer({
 }) {
   const [axis, setAxis] = useState<SizeAxis>(cfg.prefs.thinnessPriority > 0.5 ? 'thickness' : 'volume');
   const [hover, setHover] = useState<Pt | null>(null);
+  const [yMode, setYMode] = useState<YMode>('margin');
+  const load = cfg.prefs.loadProfile;
   const [table, setTable] = useState(false);
   const [check, setCheck] = useState<{ running: boolean; done: number; total: number; results: { id: string; thermal: CfdThermal }[]; error?: string }>({
     running: false,
@@ -72,14 +88,26 @@ export function Explorer({
   }, [space]);
   useEffect(() => () => client.current?.stop(), []);
 
-  const pts: Pt[] = useMemo(() => space.map((d) => ({ d, id: d.id, size: sizeOf(d, axis), margin: d.flow.worstMargin })), [space, axis]);
+  const toPt = (d: Design): Pt => {
+    const n = d.noise[load];
+    if (yMode === 'noise') {
+      const q = n.quietDb;
+      return { d, id: d.id, size: sizeOf(d, axis), margin: Number.isFinite(q) ? -q : NaN, out: !Number.isFinite(q) };
+    }
+    return { d, id: d.id, size: sizeOf(d, axis), margin: d.flow.worstMargin, out: !n.feasible };
+  };
+  const everything: Pt[] = useMemo(() => space.map(toPt), [space, axis, yMode, load]);
+  const pts = everything.filter((p) => !p.out && Number.isFinite(p.margin));
+  const outs = everything.filter((p) => p.out);
   const front = useMemo(() => frontier(pts), [pts]);
-  const sel = pts.find((p) => p.id === selected.id) ?? { d: selected, id: selected.id, size: sizeOf(selected, axis), margin: selected.flow.worstMargin };
+  const selRaw = everything.find((p) => p.id === selected.id) ?? toPt(selected);
+  const sel = Number.isFinite(selRaw.margin) ? selRaw : { ...selRaw, margin: pts.length ? Math.min(...pts.map((p) => p.margin)) : 0 };
   const all = [...pts, sel];
+  const fmtY = (v: number) => (yMode === 'noise' ? `${(-v).toFixed(1)} dB(A)` : pct(v));
 
-  const xs = all.map((p) => p.size);
+  const xs = [...all, ...outs].map((p) => p.size);
   const ysRaw = all.map((p) => p.margin);
-  for (const r of check.results) ysRaw.push(r.thermal.worstMargin);
+  if (yMode === 'margin') for (const r of check.results) ysRaw.push(r.thermal.worstMargin);
   const xLo = Math.min(...xs);
   const xHi = Math.max(...xs);
   const xPad = (xHi - xLo || 1) * 0.06;
@@ -89,7 +117,7 @@ export function Explorer({
   const yMin = Math.min(...ysRaw);
   const yMax = Math.max(...ysRaw);
   const yMid = (yMin + yMax) / 2;
-  const yHalf = Math.max(0.05, (yMax - yMin) / 2) * 1.15;
+  const yHalf = Math.max(yMode === 'noise' ? 1.5 : 0.05, (yMax - yMin) / 2) * 1.15;
   const y0 = yMid - yHalf;
   const y1 = yMid + yHalf;
   const sx = (v: number) => PAD.l + ((v - x0) / (x1 - x0)) * (W - PAD.l - PAD.r);
@@ -170,9 +198,21 @@ export function Explorer({
           ))}
         </div>
       </div>
+      <div className="seg-mini y-toggle" role="radiogroup" aria-label="Vertical axis">
+        <button type="button" role="radio" aria-checked={yMode === 'margin'} className={yMode === 'margin' ? 'on' : ''} onClick={() => setYMode('margin')}>
+          {cfg.prefs.noiseMode === 'budget' ? `Cooling at ${cfg.prefs.noiseBudgetDb} dB(A)` : 'Cooling'}
+        </button>
+        <button type="button" role="radio" aria-checked={yMode === 'noise'} className={yMode === 'noise' ? 'on' : ''} onClick={() => setYMode('noise')}>
+          Noise needed
+        </button>
+      </div>
       <p className="muted small">
-        {space.length} layouts the solver evaluated. Up and left is better: smaller case, more of the tightest part's temperature budget left at{' '}
-        {LOAD_LABEL[cfg.prefs.loadProfile]} load. The line joins the designs nothing else beats on both.
+        {space.length} layouts the solver evaluated, at {LOAD_LABEL[load]} load. Up and left is better:{' '}
+        {yMode === 'noise'
+          ? 'smaller case, and quieter while still keeping every part under its limit (fans as slow as that allows).'
+          : `smaller case, and more of the tightest part's temperature budget left${cfg.prefs.noiseMode === 'budget' ? ` with the fans held to ${cfg.prefs.noiseBudgetDb} dB(A)` : ''}.`}{' '}
+        The line joins the designs nothing else beats on both.
+        {outs.length > 0 && ` ${outs.length} design${outs.length > 1 ? 's' : ''} ${yMode === 'noise' ? "can't keep every part under its limit at any speed" : "can't meet the noise budget"} (hollow, along the bottom).`}
       </p>
 
       <div className="viz" ref={box}>
@@ -198,7 +238,7 @@ export function Explorer({
             <g key={`y${t}`}>
               <line x1={PAD.l} x2={W - PAD.r} y1={sy(t)} y2={sy(t)} className={t === 0 ? 'zero' : 'grid'} />
               <text x={PAD.l - 6} y={sy(t) + 4} className="tick" textAnchor="end">
-                {Math.round(t * 100)}%
+                {yMode === 'noise' ? Math.round(-t) : `${Math.round(t * 100)}%`}
               </text>
             </g>
           ))}
@@ -211,9 +251,13 @@ export function Explorer({
             {axis === 'volume' ? 'Volume (box envelope), L' : 'Thickness (box envelope), mm'}
           </text>
           <text x={12} y={(PAD.t + H - PAD.b) / 2} className="axis-label" textAnchor="middle" transform={`rotate(-90 12 ${(PAD.t + H - PAD.b) / 2})`}>
-            Budget left, tightest part
+            {yMode === 'noise' ? 'Quietest safe noise, dB(A)' : 'Budget left, tightest part'}
           </text>
 
+          {/* designs that can't meet the target, pinned to the bottom edge */}
+          {outs.map((p) => (
+            <circle key={`o${p.id}`} cx={sx(p.size)} cy={H - PAD.b - 4} r={3.5} className="pt-out" />
+          ))}
           {/* every design */}
           {pts.map((p) => (
             <circle key={p.id} cx={sx(p.size)} cy={sy(p.margin)} r={3.5} className="pt" />
@@ -224,7 +268,7 @@ export function Explorer({
             <circle key={`f${p.id}`} cx={sx(p.size)} cy={sy(p.margin)} r={5} className="front-pt" />
           ))}
           {/* 3D checks: hollow diamonds joined to their 1D point */}
-          {check.results.map((r) => {
+          {yMode === 'margin' && check.results.map((r) => {
             const p = all.find((q) => q.id === r.id);
             if (!p) return null;
             const x = sx(p.size);
@@ -241,7 +285,7 @@ export function Explorer({
           {/* end labels */}
           {smallest && coolest && Math.hypot(sx(coolest.size) - sx(smallest.size), sy(coolest.margin) - sy(smallest.margin)) < 90 ? (
             <text x={sx(smallest.size) + 10} y={sy(smallest.margin) + 18} className="end-label">
-              {coolest === smallest ? 'Smallest and coolest' : 'Smallest ≈ coolest'}
+              {coolest === smallest ? `Smallest and ${yMode === 'noise' ? 'quietest' : 'coolest'}` : `Smallest ≈ ${yMode === 'noise' ? 'quietest' : 'coolest'}`}
             </text>
           ) : (
             <>
@@ -252,7 +296,7 @@ export function Explorer({
               )}
               {coolest && (
                 <text x={sx(coolest.size) - 10} y={sy(coolest.margin) - 12} className="end-label" textAnchor="end">
-                  Coolest
+                  {yMode === 'noise' ? 'Quietest' : 'Coolest'}
                 </text>
               )}
             </>
@@ -269,7 +313,11 @@ export function Explorer({
             <br />
             {tip.d.volumeL.toFixed(1)} L · {Math.round(tip.d.thickness)} mm thick
             <br />
-            {tip.d.flow.worstComponent}: {pct(tip.margin)} left ({tip.d.flow.worstHeadroomK.toFixed(0)} K)
+            {tip.d.flow.worstComponent}: {pct(tip.d.flow.worstMargin)} left ({tip.d.flow.worstHeadroomK.toFixed(0)} K)
+            <br />
+            {tip.d.noise[load].noise.spl.toFixed(1)} dB(A), fans {speedRange(tip.d, load)}
+            {tip.d.noise[load].feasible ? '' : ' · over budget'}
+            {Number.isFinite(tip.d.noise[load].quietDb) ? ` · quietest safe ${tip.d.noise[load].quietDb.toFixed(1)} dB(A)` : ''}
             {tip.d.chamber ? ` · ${tip.d.chamber.chambers.length} chambers` : ''}
           </div>
         )}
@@ -303,13 +351,20 @@ export function Explorer({
             step={1}
             value={frontIdx < 0 ? 0 : frontIdx}
             onChange={(e) => onSelect(front[Number(e.target.value)].id)}
-            aria-valuetext={frontIdx < 0 ? 'off the frontier' : `${fmtSize(front[frontIdx].size)}, ${pct(front[frontIdx].margin)} left`}
+            aria-valuetext={frontIdx < 0 ? 'off the frontier' : `${fmtSize(front[frontIdx].size)}, ${fmtY(front[frontIdx].margin)}`}
           />
-          <span>Thermal</span>
+          <span>{yMode === 'noise' ? 'Quiet' : 'Thermal'}</span>
         </label>
       )}
-      {beaten && <p className="muted small">The selected design is not on the frontier: another design is both smaller and cooler. Move the slider to snap to it.</p>}
-      {front.length > 1 && front[front.length - 1].margin - front[0].margin < 0.05 && (
+      {pts.length === 0 && (
+        <p className="small">
+          {yMode === 'noise'
+            ? 'No layout keeps every part under its limit at any fan speed.'
+            : `No layout meets ${cfg.prefs.noiseBudgetDb} dB(A): the quietest one makes ${Math.min(...outs.map((p) => p.d.noise[load].noise.spl)).toFixed(1)} dB(A) even at its slowest fan speeds (pumps and the PSU set a floor). Raise the budget or switch to "Quietest that stays safe".`}
+        </p>
+      )}
+      {beaten && pts.length > 0 && <p className="muted small">The selected design is not on the frontier: another design is both smaller and cooler. Move the slider to snap to it.</p>}
+      {yMode === 'margin' && front.length > 1 && front[front.length - 1].margin - front[0].margin < 0.05 && (
         <p className="muted small">
           The frontier is nearly flat: the coolest design keeps only {((front[front.length - 1].margin - front[0].margin) * 100).toFixed(1)} points more of the tightest part's
           budget than the smallest. For these parts the case shape hardly changes temperatures — each part's own rise above its air or
@@ -390,7 +445,7 @@ export function Explorer({
                 <td className="num">
                   {axis === 'volume' ? p.size.toFixed(1) : Math.round(p.size)} {unit}
                 </td>
-                <td className="num">{pct(p.margin)}</td>
+                <td className="num">{fmtY(p.margin)}</td>
               </tr>
             ))}
           </tbody>
