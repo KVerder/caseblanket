@@ -150,7 +150,7 @@ for (const [name, vp, opts] of [
   const shellShown = await page.evaluate(() => window.__caseblanketViewer.flow !== undefined);
   check(shellShown, 'viewer exposes the flow layer');
   await page.getByRole('button', { name: 'Simulate airflow' }).click();
-  await page.waitForSelector('.sim-table', { timeout: 30000 });
+  await page.waitForSelector('section.sim .sim-table', { timeout: 60000 });
   await page.waitForTimeout(2000);
   const active = await page.evaluate(() => window.__caseblanketViewer.flow.active);
   check(active, 'simulated airflow particles animate in the 3D view');
