@@ -13,6 +13,7 @@ import { SolverClient } from './state/solverClient';
 import { ModelPanel } from './ui/ModelPanel';
 import { PartsPanel } from './ui/PartsPanel';
 import { PrintDialog } from './ui/PrintDialog';
+import { StructuresPanel } from './ui/StructuresPanel';
 import { SimPanel } from './ui/SimPanel';
 import { Explorer } from './ui/Explorer';
 import { PrintPlan } from './ui/PrintPlan';
@@ -212,6 +213,7 @@ export default function App() {
       <Chambers d={design} cfg={cfg} />
       <PrintPlan design={design} cfg={cfg} />
       <AirflowTable d={design} cfg={cfg} />
+      <StructuresPanel design={design} cfg={cfg} />
       <SimPanel design={design} cfg={cfg} viewer={() => viewerRef.current} />
       <FidelityPanel design={design} cfg={cfg} />
       <Checks d={design} />

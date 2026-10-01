@@ -156,6 +156,7 @@ export function SimPanel({ design, cfg, viewer }: { design: Design; cfg: DesignC
           </tbody>
         </table>
       )}
+      {stats?.quality && <Quality design={design} q={stats.quality} />}
 
       {opt.result && (
         <div className="shaping">
@@ -211,8 +212,8 @@ export function SimPanel({ design, cfg, viewer }: { design: Design; cfg: DesignC
             ))}
           </ul>
           <p className="muted small">
-            Every structure here sits inside the existing shell, so none adds volume. Not tried: {UNRESOLVED_STRUCTURES.join(', ')} — their effect is
-            smaller than a grid cell, so this simulation can't show it; they need a finer reference simulation.
+            Every structure here sits inside the existing shell, so none adds volume. Not tried in 3D: {UNRESOLVED_STRUCTURES.join(', ')} — their effect is
+            smaller than a grid cell, so this simulation can't show it (bell-mouths and diffusers are estimated under Structures).
           </p>
           {shaping && (
             <p className="muted small">The copper louvres, duct plates and walls in the 3D view are the kept changes; the simulation now runs with them.</p>
@@ -226,5 +227,32 @@ export function SimPanel({ design, cfg, viewer }: { design: Design; cfg: DesignC
         when the grid is halved. Use it to compare options, not as a measurement.
       </p>
     </section>
+  );
+}
+
+/** Recirculation at the intake fans and how evenly air crosses each core, from the final state. */
+function Quality({ design, q }: { design: Design; q: NonNullable<FlowStats['quality']> }) {
+  const intake = q.recirculation.filter((r) => design.flow.groups.find((g) => g.id === r.group)?.source === 'outside');
+  const label = (id: string) => design.flow.groups.find((g) => g.id === id)?.label ?? id;
+  if (!intake.length && !q.uniformity.length) return null;
+  return (
+    <ul className="checks-list quality">
+      {intake.map((r) => (
+        <li key={r.group} className={`check ${r.share > 0.15 ? 'warn' : 'ok'}`}>
+          <span className="dot" aria-hidden="true" />
+          <span>
+            {label(r.group)} intake: {Math.round(r.share * 100)}% recirculated (warm air reaching the fan, as a share of the heat sources' mean rise)
+          </span>
+        </li>
+      ))}
+      {q.uniformity.map((u) => (
+        <li key={u.label} className={`check ${u.index < 0.8 ? 'warn' : 'ok'}`}>
+          <span className="dot" aria-hidden="true" />
+          <span>
+            {u.label}: flow uniformity {u.index.toFixed(2)} (1 = perfectly even; below about 0.8 parts of the core work little)
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }

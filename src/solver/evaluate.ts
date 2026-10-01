@@ -27,9 +27,19 @@ import type { WrapMetrics } from './shrinkwrap';
 export interface DesignRecipe {
   net: NetworkInput;
   /** Speed-controlled fan groups: rating, max speed, slowest share, grille penalty. */
-  fans: { id: string; label: string; fan: FanSpec; count: number; rpmMax: number; min: number; penaltyDb: number }[];
+  fans: { id: string; label: string; fan: FanSpec; count: number; rpmMax: number; min: number; penaltyDb: number; gapMm: number; atWall: boolean; wall?: Dir }[];
   /** Sources that don't follow the fan speeds (pumps, PSU fan), sound power dB(A). */
   fixedLw: number[];
+  /** The same sources with their names. */
+  fixedSources: NoiseSource[];
+  /** Open vent area of each fan group, m² (for vent noise). */
+  ventOpenM2: Record<string, number>;
+  passiveOpenM2: number;
+  /** How the fan speeds were chosen. */
+  control: { quiet: boolean; budgetDb: number };
+  /** Depth of the fan-to-radiator plenum, mm. */
+  plenumMm: number;
+  exterior: Vec3;
 }
 
 export interface DesignNoise {
@@ -811,9 +821,16 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       net: networkAt(loadId, best!.dirs, chamber, acoustic[loadId].speeds),
       fans: Object.entries(fanMeta).map(([id, m]) => {
         const a = fanAcoustics(m.fan);
-        return { id, label: m.label, fan: m.fan, count: m.count, rpmMax: a.rpmMax, min: a.rpmMin / a.rpmMax, penaltyDb: m.atWall ? obstructionPenalty(m.fan, m.gap, blocked).db : 0 };
+        const wall = id === 'cpu' ? board.face : id === 'gpu-card' ? gpu.face : parts.find((p) => p.id === id)?.face;
+        return { id, label: m.label, fan: m.fan, count: m.count, rpmMax: a.rpmMax, min: a.rpmMin / a.rpmMax, penaltyDb: m.atWall ? obstructionPenalty(m.fan, m.gap, blocked).db : 0, gapMm: m.gap, atWall: m.atWall, wall };
       }),
       fixedLw: acoustic[loadId].noise.sources.filter((x) => x.id.startsWith('pump') || x.id === 'psu').map((x) => x.lw),
+      fixedSources: acoustic[loadId].noise.sources.filter((x) => x.id.startsWith('pump') || x.id === 'psu'),
+      ventOpenM2: Object.fromEntries(acoustic[loadId].flow.groups.map((g) => [g.id, ventAreaFor(g.id === 'gpu-card' ? 'gpu' : g.id) * vs.openRatio])),
+      passiveOpenM2: passiveArea * MM2 * vs.openRatio,
+      control: { quiet: prefs.noiseMode === 'quiet', budgetDb: prefs.noiseBudgetDb ?? 30 },
+      plenumMm: cfg.advanced.radPlenumGap + profile.extraGap,
+      exterior,
     },
     chamber,
     chamberOptions: chamberOptions.slice(0, 6),

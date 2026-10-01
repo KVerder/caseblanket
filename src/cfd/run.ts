@@ -26,14 +26,14 @@ export function simulate(design: Design, cfg: DesignConfig, shaping: Shaping, op
   const emit = (done: boolean) => {
     if (!opts.frame) return;
     const snap = sim.snapshot();
-    opts.frame({ n: scene.n, h: scene.h, origin: scene.origin, solid: scene.cellType, vel: snap.vel, T: snap.T, stats: sim.stats(), done });
+    opts.frame({ n: scene.n, h: scene.h, origin: scene.origin, solid: scene.cellType, vel: snap.vel, T: snap.T, stats: done ? { ...sim.stats(), quality: sim.quality() } : sim.stats(), done });
   };
   for (let s = 0; s < steps; s++) {
     sim.step(dt);
     if (opts.every && s % opts.every === opts.every - 1 && s < steps - 1) emit(false);
   }
   emit(true);
-  return sim.stats();
+  return { ...sim.stats(), quality: sim.quality() };
 }
 
 export interface ShapingStep {

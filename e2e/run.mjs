@@ -223,6 +223,14 @@ for (const [name, vp, opts] of [
   await page.waitForTimeout(300);
   check(/dB\(A\)/.test((await ex.locator('.axis-label').nth(1).textContent()) ?? ''), `${name}: explorer switches to the noise-needed view`);
   await ex.getByRole('radio', { name: /Cooling/ }).click();
+  // Structures (estimates): every row carries cooling, noise, volume and print cost; details expand.
+  const st = page.locator('section.structures');
+  const stRows = await st.locator('tbody tr').count();
+  const cells = await st.locator('tbody tr').first().locator('td').count();
+  await st.locator('.link-btn').first().click();
+  const detail = await st.locator('tbody tr').first().locator('.path-sub').first().innerText();
+  const stOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  check(stRows >= 3 && cells === 4 && /estimate|formula|model/.test(detail) && !stOverflow, `${name}: structures list ${stRows} estimates with their costs and basis, no page scroll`);
   if (!opts.touch) {
     await page.getByRole('tab', { name: 'Tune' }).click();
     await page.locator('#noise-budget').fill('25');

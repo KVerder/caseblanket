@@ -84,6 +84,13 @@ describe('case simulation', () => {
     expect(rad.meanRise).toBeGreaterThan(model.deltaC * 0.2);
     expect(rad.meanRise).toBeLessThan(model.deltaC * 2.5);
     expect(rad.inletRise).toBeLessThan(model.deltaC);
+    // Flow-quality metrics come with the final state.
+    const q = st.quality!;
+    console.log('quality', JSON.stringify(q));
+    expect(q.uniformity.length).toBeGreaterThan(0);
+    for (const u of q.uniformity) expect(u.index).toBeGreaterThanOrEqual(0), expect(u.index).toBeLessThanOrEqual(1);
+    expect(q.recirculation.map((r) => r.group)).toEqual(expect.arrayContaining(['rad-gpu']));
+    for (const r of q.recirculation) expect(r.share).toBeGreaterThanOrEqual(0);
   });
 });
 

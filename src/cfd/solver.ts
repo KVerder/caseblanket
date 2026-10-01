@@ -88,6 +88,19 @@ export interface FlowStats {
   caseRise: number;
   maxRise: number;
   divergence: number;
+  /** Recirculation and uniformity, on the final state of a run. */
+  quality?: FlowQuality;
+}
+
+/** Flow-quality metrics of a simulated design. */
+export interface FlowQuality {
+  /**
+   * Per fan group: air temperature rise at the fan as a share of the heat sources' mean rise (heat-
+   * weighted). For an intake fan that is the share of its air that is recirculated exhaust.
+   */
+  recirculation: { group: string; share: number }[];
+  /** Per radiator core or fin stack: uniformity index 1 − Σ|v − v̄| / (2·n·|v̄|) (1 = perfectly even). */
+  uniformity: { label: string; index: number }[];
 }
 
 const RHO_CP = 1.2e-9 * 1005; // J/(mm³·K)
@@ -626,6 +639,51 @@ export class FlowSolver {
     let maxRise = 0;
     for (let c = 0; c < this.T.length; c++) maxRise = Math.max(maxRise, this.T[c]);
     return { steps: this.steps, time: this.time, sources, caseRise, maxRise, divergence: this.computeDivergence() };
+  }
+
+  quality(): FlowQuality {
+    const st = this.stats();
+    const watts = st.sources.reduce((a, x) => a + x.watts, 0);
+    const ref = watts > 0 ? st.sources.reduce((a, x) => a + x.watts * x.meanRise, 0) / watts : 0;
+    const byGroup = new Map<string, { sum: number; n: number }>();
+    for (const f of this.s.fans) {
+      const g = byGroup.get(f.group) ?? { sum: 0, n: 0 };
+      for (const c of f.cells) {
+        g.sum += this.T[c];
+        g.n++;
+      }
+      byGroup.set(f.group, g);
+    }
+    const recirculation = [...byGroup].map(([group, g]) => ({ group, share: ref > 0 && g.n ? g.sum / g.n / ref : 0 }));
+    const uniformity: FlowQuality['uniformity'] = [];
+    const geo = this.s.geometry;
+    if (geo) {
+      const h = this.h;
+      const o = this.s.origin;
+      for (const p of geo.porous) {
+        if (!/core|fins/i.test(p.label) || p.along.length !== 1) continue;
+        const a = p.along[0];
+        const vals: number[] = [];
+        const lo = [0, 1, 2].map((k) => Math.max(0, Math.ceil((p.box.min[k] - o[k]) / h - 0.5)));
+        const hi = [0, 1, 2].map((k, idx) => Math.min([this.nx, this.ny, this.nz][idx] - 1, Math.floor((p.box.max[k] - o[k]) / h - 0.5)));
+        for (let k = lo[2]; k <= hi[2]; k++)
+          for (let j = lo[1]; j <= hi[1]; j++)
+            for (let i = lo[0]; i <= hi[0]; i++) {
+              if (this.s.cellType[this.cell(i, j, k)] === CELL_SOLID) continue;
+              const x = (i + 0.5) * h;
+              const y = (j + 0.5) * h;
+              const z = (k + 0.5) * h;
+              const v = a === 0 ? this.sampleU(x, y, z) : a === 1 ? this.sampleV(x, y, z) : this.sampleW(x, y, z);
+              if (Number.isFinite(v)) vals.push(v);
+            }
+        if (vals.length < 4) continue;
+        const mean = vals.reduce((s2, v) => s2 + v, 0) / vals.length;
+        if (Math.abs(mean) < 1e-6) continue;
+        const dev = vals.reduce((s2, v) => s2 + Math.abs(v - mean), 0);
+        uniformity.push({ label: p.label, index: Math.max(0, 1 - dev / (2 * vals.length * Math.abs(mean))) });
+      }
+    }
+    return { recirculation, uniformity };
   }
 
   /** Cell-centre velocity (mm/s) and temperature rise, for drawing. */
