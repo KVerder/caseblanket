@@ -379,7 +379,7 @@ export function fitTestPieces(design: Design, cfg: DesignConfig, plan: MountPlan
     out.push({ name: 'fit-board-standoffs', box: { min: lo, max: [hi[0], hi[1], T + 8] }, mesh: mergeMeshes([plate, ...bosses]) });
   }
   // Fans: one template per size used, with the bore and the four holes.
-  const sizes = [...new Set(design.parts.filter((p) => p.fan && (p.kind === 'rad-cpu' || p.kind === 'rad-gpu')).map((p) => p.fan!.size))];
+  const sizes = [...new Set(design.parts.filter((p) => p.fan && (p.kind === 'rad-cpu' || p.kind === 'rad-gpu' || p.kind === 'case-fan')).map((p) => p.fan!.size))];
   for (const size of sizes) {
     const sp = fanHoleSpacing(size);
     if (!sp) continue;

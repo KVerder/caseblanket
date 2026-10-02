@@ -19,7 +19,7 @@ import {
 export type LayerId = 'M' | 'A' | 'B' | 'AB';
 export const LAYER_BITS: Record<LayerId, number> = { M: 1, A: 1, B: 2, AB: 3 };
 
-export type ItemKind = 'board' | 'gpu' | 'psu' | 'rad-cpu' | 'rad-gpu' | 'extra';
+export type ItemKind = 'board' | 'gpu' | 'psu' | 'rad-cpu' | 'rad-gpu' | 'case-fan' | 'extra';
 
 export interface Profile {
   id: string;
@@ -49,7 +49,7 @@ export interface VariantPart {
   face?: Dir;
   faceRequired: boolean;
   faceGap: number;
-  /** Radiators only. */
+  /** Radiators and case fans. */
   mode?: 'through' | 'wall';
   fan?: FanSpec;
   fanCount?: number;
@@ -412,6 +412,41 @@ function radVariants(
   return dedupe(out, (v) => `${v.layer}|${v.parts[0].o.ext.join(',')}|${v.parts[0].face}|${sideToWorld(v.parts[0].o.frame, 0)}`);
 }
 
+/** A case fan screwed to a vented panel, with a plenum behind it like a radiator's. */
+function caseFanVariants(ctx: BuildContext, fan: FanSpec, layers: LayerId[], allowed: Set<Dir>): Variant[] {
+  const { cfg, profile } = ctx;
+  const tol = cfg.prefs.tolerance / 2;
+  const size: Vec3 = [fan.size, fan.size, fan.thickness];
+  const wallGap = cfg.advanced.radWallGap + profile.extraGap / 2;
+  const plenum = cfg.advanced.radPlenumGap + profile.extraGap;
+  const clears = withTol(
+    [
+      { side: 4, depth: wallGap },
+      { side: 5, depth: plenum },
+    ],
+    tol,
+    [4],
+  );
+  const out: Variant[] = [];
+  for (const frame of allFrames()) {
+    const face = sideToWorld(frame, 4);
+    if (!allowed.has(face)) continue;
+    const o = orient(size, frame, clears);
+    for (const layer of layers) {
+      if (!faceAllowed(layer, face)) continue;
+      out.push(
+        makeVariant(
+          layer,
+          [{ kind: 'case-fan', o, du: 0, dv: 0, align: alignFor(layer, face), face, faceRequired: true, faceGap: wallGap, mode: 'wall', fan, fanCount: 1 }],
+          face === 1,
+        ),
+      );
+    }
+  }
+  // A square fan looks the same turned about its axis.
+  return dedupe(out, (v) => `${v.layer}|${v.parts[0].o.ext.join(',')}|${v.parts[0].face}`);
+}
+
 function extraVariants(ctx: BuildContext, e: { x: number; y: number; z: number }, layers: LayerId[]): Variant[] {
   const tol = ctx.cfg.prefs.tolerance / 2;
   const clears = withTol([], tol);
@@ -454,6 +489,10 @@ export function buildItems(ctx: BuildContext): ItemDef[] {
   }
   if (gpu.cooling === 'aio' && gpu.radiator) {
     items.push(finish('rad-gpu', 'rad-gpu', 'GPU radiator', radVariants(ctx, 'rad-gpu', gpu.radiator, any, allowed)));
+  }
+  const caseFans = cfg.parts.caseFans;
+  for (let i = 0; i < Math.min(2, caseFans?.count ?? 0); i++) {
+    items.push(finish(`fan-${i + 1}`, 'case-fan', `Case fan ${i + 1}`, caseFanVariants(ctx, caseFans.fan, any, allowed)));
   }
   for (const e of cfg.parts.extras) {
     items.push(finish(`extra-${e.id}`, 'extra', e.name, extraVariants(ctx, e, any)));

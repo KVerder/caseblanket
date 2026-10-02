@@ -19,6 +19,7 @@ import {
   buildGpu,
   buildPsu,
   buildRadiator,
+  buildCaseFan,
   buildRouted,
   clearanceGhost,
   PART_COLORS,
@@ -505,6 +506,7 @@ void main() {
       else if (part.kind === 'gpu') buildGpu(b, part, cfg);
       else if (part.kind === 'psu') buildPsu(b, part, cfg);
       else if (part.kind === 'rad-cpu' || part.kind === 'rad-gpu') buildRadiator(b, part);
+      else if (part.kind === 'case-fan') buildCaseFan(b, part);
       else buildExtra(b, part);
       g.userData.partId = part.id;
       this.partsGroup.add(g);

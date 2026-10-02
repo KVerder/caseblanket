@@ -505,6 +505,7 @@ export function defaultConfig(): DesignConfig {
       gpu: GPUS[0],
       psu: psuFromFormFactor('sfx', 850),
       extras: [],
+      caseFans: { count: 0, fan: FANS.a12x25, direction: 'auto' },
     },
     prefs: DEFAULT_PREFS,
     advanced: DEFAULT_ADVANCED,

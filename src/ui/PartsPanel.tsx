@@ -82,7 +82,7 @@ function RadiatorFields(props: { rad: RadiatorSpec; onChange: (r: RadiatorSpec) 
 
 export function PartsPanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: DesignConfig) => void }) {
   const [catalog, setCatalog] = useState<CatalogKind | null>(null);
-  const { board, cooler, gpu, psu, extras } = cfg.parts;
+  const { board, cooler, gpu, psu, extras, caseFans } = cfg.parts;
   const up = (recipe: (d: DesignConfig) => void) => setCfg(produce(cfg, recipe));
 
   return (
@@ -296,6 +296,52 @@ export function PartsPanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Des
           ]}
           onChange={(v) => up((d) => void (d.parts.psu.fanOn = v))}
         />
+      </Section>
+
+      <Section title="Case fans" aside={<span className="muted">{caseFans.count ? `${caseFans.count} × ${caseFans.fan.size} mm` : 'none'}</span>} open={caseFans.count > 0}>
+        <p className="muted small">
+          Fans on a panel of their own, besides the cooler, card, PSU and radiator fans. The solver places each against a vented panel and, on Auto, tries both
+          directions and keeps the one that cools the tightest part best.
+        </p>
+        <Segmented
+          label="Fans"
+          value={String(caseFans.count)}
+          options={[
+            { value: '0', label: 'None' },
+            { value: '1', label: '1 × 120 mm' },
+            { value: '2', label: '2 × 120 mm' },
+          ]}
+          onChange={(v) => up((d) => void (d.parts.caseFans.count = Number(v)))}
+        />
+        {caseFans.count > 0 && (
+          <>
+            <Segmented
+              label="Direction"
+              value={caseFans.direction}
+              options={[
+                { value: 'auto', label: 'Auto' },
+                { value: 'intake', label: 'Intake' },
+                { value: 'exhaust', label: 'Exhaust' },
+              ]}
+              onChange={(v) => up((d) => void (d.parts.caseFans.direction = v))}
+            />
+            <Select
+              id="case-fan-model"
+              label="Fan"
+              value={caseFans.fan.thickness === 15 ? 'slim' : caseFans.fan.acoustics ? 'a12x25' : 'generic'}
+              options={[
+                { value: 'a12x25', label: '120 × 25 mm, 2000 rpm (NF-A12x25 class)' },
+                { value: 'slim', label: '120 × 15 mm slim, 1850 rpm (NF-A12x15 class)' },
+                { value: 'generic', label: '120 × 25 mm, generic' },
+              ]}
+              onChange={(v) => up((d) => void (d.parts.caseFans.fan = structuredClone(v === 'slim' ? FANS.a12x15 : v === 'generic' ? FANS.generic120 : FANS.a12x25)))}
+            />
+            <Grid cols={2}>
+              <NumberField id="case-fan-flow" label="Airflow" unit="m³/h" value={caseFans.fan.maxAirflowM3h} min={20} max={300} onChange={(v) => up((d) => void (d.parts.caseFans.fan.maxAirflowM3h = v))} hint="Free-air rating" />
+              <NumberField id="case-fan-p" label="Pressure" unit="mm H₂O" value={caseFans.fan.maxPressureMmH2O} min={0.3} max={10} step={0.1} onChange={(v) => up((d) => void (d.parts.caseFans.fan.maxPressureMmH2O = v))} hint="Static pressure at zero flow" />
+            </Grid>
+          </>
+        )}
       </Section>
 
       <Section title="Other parts" aside={<span className="muted">{extras.length ? `${extras.length} item${extras.length > 1 ? 's' : ''}` : 'none'}</span>} open={extras.length > 0}>

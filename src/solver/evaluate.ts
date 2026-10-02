@@ -245,7 +245,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
         min: [u0 + vp.o.off[0], v0 + vp.o.off[1], t0 + vp.o.off[2]],
         max: [u0 + vp.o.off[0] + vp.o.body[0], v0 + vp.o.off[1] + vp.o.body[1], t0 + vp.o.off[2] + vp.o.body[2]],
       };
-      const id = vp.kind === 'extra' ? item.id : vp.kind;
+      const id = vp.kind === 'extra' || vp.kind === 'case-fan' ? item.id : vp.kind;
       parts.push({
         id,
         kind: vp.kind,
@@ -441,6 +441,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   const groupParts: Record<string, string> = {};
   const radParts: PlacedPart[] = [];
   for (const p of parts) if (p.kind === 'rad-cpu' || p.kind === 'rad-gpu') radParts.push(p);
+  const fanParts = parts.filter((p) => p.kind === 'case-fan');
 
   /** Heat paths and the components they cool, at a load profile. */
   const network = (load: { cpu: number; gpu: number }) => {
@@ -594,14 +595,28 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     };
   };
 
+  // Case fans: a fan on a panel, with the plenum behind it; no heat of its own.
+  const caseFanGroup = (p: PlacedPart, dir: 'in' | 'out'): FanGroupInput => {
+    const fan = p.fan!;
+    const area = fanArea(fan, 1);
+    const plen = cfg.advanced.radPlenumGap + profile.extraGap;
+    const losses: LossTerm[] = [{ label: 'fan proximity', zeta: prox(p.faceAtWall ? p.faceGap : 0, fan), area }];
+    if (p.faceAtWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor(p.id, p.face) }, ...floorGap(p.id, p.face));
+    else losses.push({ label: 'blocked face', zeta: 40, area });
+    losses.push({ label: 'plenum', zeta: 1, area: Math.min(area, 4 * fan.size * plen * MM2) });
+    return { id: p.id, label: p.label, heatW: 0, fan, fanCount: 1, source: dir === 'out' ? 'case' : 'outside', sink: dir === 'in' ? 'case' : 'outside', losses, isRadiator: false };
+  };
+
+  // Parts whose direction the solver picks: radiators on a wall, then case fans.
   const wallRads = radParts.filter((p) => p.mode !== 'through');
-  const pref = prefs.radDirection;
+  const dirParts = [...wallRads, ...fanParts];
+  const fanPref = cfg.parts.caseFans?.direction ?? 'auto';
+  const prefOf = (p: PlacedPart) => (p.kind === 'case-fan' ? fanPref : prefs.radDirection);
   const combos: ('in' | 'out')[][] = [];
-  const n = wallRads.length;
+  const n = dirParts.length;
   for (let m = 0; m < 1 << n; m++) {
-    const c = wallRads.map((_, i) => ((m >> i) & 1 ? 'out' : 'in') as 'in' | 'out');
-    if (pref === 'intake' && c.some((x) => x !== 'in')) continue;
-    if (pref === 'exhaust' && c.some((x) => x !== 'out')) continue;
+    const c = dirParts.map((_, i) => ((m >> i) & 1 ? 'out' : 'in') as 'in' | 'out');
+    if (dirParts.some((p, i) => (prefOf(p) === 'intake' && c[i] !== 'in') || (prefOf(p) === 'exhaust' && c[i] !== 'out'))) continue;
     combos.push(c);
   }
   if (combos.length === 0) combos.push([]);
@@ -627,9 +642,10 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       const net = network(advanced.loads[profileId]);
       const g0 = [...net.groups];
       for (const p of radParts) {
-        const i = wallRads.indexOf(p);
+        const i = dirParts.indexOf(p);
         g0.push(radGroup(p, i < 0 ? 'through' : dirs[i], net.radHeat[p.id], net.radComp(p)));
       }
+      for (const p of fanParts) g0.push(caseFanGroup(p, dirs[dirParts.indexOf(p)]));
       cached = { net, groups0: g0 };
       netCache.set(key, cached);
     }
@@ -703,6 +719,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   // ---- fan speeds and noise, at each load
   const fanMeta: Record<string, { fan: FanSpec; count: number; gap: number; atWall: boolean; label: string }> = {};
   for (const p of radParts) fanMeta[p.id] = { fan: p.fan!, count: p.fanCount!, gap: p.faceGap, atWall: p.faceAtWall, label: `${p.label} fans` };
+  for (const p of fanParts) fanMeta[p.id] = { fan: p.fan!, count: 1, gap: p.faceGap, atWall: p.faceAtWall, label: p.label };
   if (cooler.kind !== 'aio') fanMeta.cpu = { fan: cooler.fan, count: 1, gap: board.faceGap, atWall: board.faceAtWall && vents.some((v) => v.groupId === 'cpu'), label: 'CPU cooler fan' };
   if (gpuSpec.cardFan) fanMeta['gpu-card'] = { fan: gpuSpec.cardFanSpec, count: 1, gap: gpu.faceGap, atWall: gpu.faceAtWall && vents.some((v) => v.groupId === 'gpu'), label: 'Graphics card fan' };
   const psuMeta = { fan: psuSpec.fan, gap: psu.faceGap, atWall: psu.faceAtWall };
@@ -750,8 +767,8 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     gaming: { speeds: acoustic.gaming.speeds, noise: acoustic.gaming.noise, feasible: acoustic.gaming.feasible, quietDb: acoustic.gaming.quietDb },
     full: { speeds: acoustic.full.speeds, noise: acoustic.full.noise, feasible: acoustic.full.feasible, quietDb: acoustic.full.quietDb },
   };
-  for (const p of radParts) {
-    const i = wallRads.indexOf(p);
+  for (const p of [...radParts, ...fanParts]) {
+    const i = dirParts.indexOf(p);
     p.airflow = i < 0 ? 'through' : best!.dirs[i];
     groupParts[p.id] = p.id;
   }
@@ -783,6 +800,9 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   if (bs.coolerOverhangsRear) checks.push({ level: 'warn', text: 'CPU cooler overhangs the rear edge of the board.' });
   for (const p of radParts) {
     if (!p.faceAtWall) checks.push({ level: 'error', text: `${p.label} fans do not reach a vented panel.` });
+  }
+  for (const p of fanParts) {
+    if (!p.faceAtWall) checks.push({ level: 'error', text: `${p.label} does not reach a vented panel.` });
   }
   if (psuSpec.fanOn === 'face' && !psu.faceAtWall) checks.push({ level: 'info', text: 'PSU fan draws warm case air (fan does not face a panel).' });
   if (gpuSpec.cardFan && !gpu.faceAtWall) checks.push({ level: 'info', text: 'GPU card fan draws case air (does not face a panel).' });

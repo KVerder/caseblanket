@@ -144,12 +144,22 @@ export interface ExtraItem {
   heatW: number;
 }
 
+/** Case fans on a panel of their own (not on a radiator or cooler). */
+export interface CaseFansConfig {
+  /** 0, 1 or 2. */
+  count: number;
+  fan: FanSpec;
+  /** Let the solver pick intake or exhaust for each fan, or fix them all. */
+  direction: 'auto' | 'intake' | 'exhaust';
+}
+
 export interface PartsConfig {
   board: MotherboardSpec;
   cooler: CpuCoolerSpec;
   gpu: GpuSpec;
   psu: PsuSpec;
   extras: ExtraItem[];
+  caseFans: CaseFansConfig;
 }
 
 export type GpuMount = 'any' | 'riser' | 'slot';

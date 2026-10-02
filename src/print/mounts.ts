@@ -187,10 +187,10 @@ export function mountPlan(design: Design, cfg: DesignConfig): MountPlan {
   if (out.standoffs.length) out.hardware.push({ item: 'M3 brass heat-set insert, 4.0 mm hole × 5.8 mm (e.g. F1BM3)', qty: out.standoffs.length, note: 'One per standoff; set with a soldering iron at the filament’s print temperature.' });
   if (out.standoffs.length) out.hardware.push({ item: 'M3 × 6 mm screw (board to standoff)', qty: out.standoffs.length, note: 'M3 fits the board’s 3.96 mm holes; tie one standoff to PSU ground (the board grounds through its holes).' });
 
-  // ---- radiator fans: screw holes through the vented panel, at the fan pattern.
+  // ---- radiator and case fans: screw holes through the vented panel, at the fan pattern.
   let fanScrews = 0;
   for (const p of design.parts) {
-    if ((p.kind !== 'rad-cpu' && p.kind !== 'rad-gpu') || !p.fan || p.face === undefined || !p.faceAtWall) continue;
+    if ((p.kind !== 'rad-cpu' && p.kind !== 'rad-gpu' && p.kind !== 'case-fan') || !p.fan || p.face === undefined || !p.faceAtWall) continue;
     const sp = fanHoleSpacing(p.fan.size);
     if (!sp) {
       out.warnings.push(`${p.label}: no screw pattern known for ${p.fan.size} mm fans; drill through the panel at the fan holes.`);
@@ -210,6 +210,14 @@ export function mountPlan(design: Design, cfg: DesignConfig): MountPlan {
         out.holes.push({ label: `${p.label} fan ${i + 1}`, wall: p.face, x: w[xa], y: w[ya], d: PANEL_HOLE_D });
         fanScrews++;
       }
+    }
+    if (p.kind === 'case-fan') {
+      out.hardware.push({
+        item: `Case-fan screw (self-tapping, as supplied with the fan)`,
+        qty: 4,
+        note: `${p.label}: through the ${wall} mm panel into the ${p.fan.size} mm fan's corner holes; the fan's own screws are made for a thin steel panel, so check they still reach the fan with this wall.`,
+      });
+      continue;
     }
     const rad = p.radiator!;
     out.hardware.push({

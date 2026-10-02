@@ -12,6 +12,7 @@ export const PART_COLORS: Record<string, string> = {
   psu: '#40444c',
   'rad-cpu': '#9aa1ad',
   'rad-gpu': '#9aa1ad',
+  'case-fan': '#3a6ea5',
   extra: '#b08a4a',
 };
 
@@ -163,6 +164,11 @@ export function buildRadiator(b: PartBuilder, part: PlacedPart) {
   const span = n * f.size;
   const start = (len - span) / 2;
   for (let i = 0; i < n; i++) fan(b, part, start + f.size * (i + 0.5), wid / 2, core, Math.min(f.size, wid), f.thickness);
+}
+
+export function buildCaseFan(b: PartBuilder, part: PlacedPart) {
+  const [len, wid, thick] = part.size;
+  fan(b, part, len / 2, wid / 2, 0, Math.min(len, wid), thick);
 }
 
 export function buildExtra(b: PartBuilder, part: PlacedPart) {

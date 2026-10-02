@@ -356,6 +356,11 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
       for (let i = 0; i < nF; i++) disks.push(...addFan(part, start + fan.size * (i + 0.5), wid / 2, Math.min(fan.size, wid) / 2 - 2, rad.coreThickness, fanTop, blow, part.id, fan, nF, false));
       // One frame across the whole fan row.
       shroud(local(part, [0, 0, rad.coreThickness], [len, wid, fanTop]), disks);
+    } else if (part.kind === 'case-fan') {
+      // +e3 points at the vented wall, as for a radiator's fans; the frame around the disk is solid.
+      const fan = part.fan!;
+      const [len, wid, thick] = part.size;
+      addFan(part, len / 2, wid / 2, Math.min(len, wid) / 2 - 2, 0, Math.max(thick, h), fanDir(part) === 'in' ? -1 : 1, part.id, fan);
     } else {
       solidBox(part.body);
     }
@@ -511,7 +516,7 @@ export function ductCandidates(design: Design): string[] {
   return design.parts.filter((p) => p.face !== undefined && p.faceAtWall && p.mode !== 'through' && p.faceGap > 2).map((p) => p.id);
 }
 
-/** Radiators whose fan direction the optimiser may reverse. */
+/** Radiators and case fans whose direction the optimiser may reverse. */
 export function flipCandidates(design: Design): string[] {
-  return design.parts.filter((p) => (p.kind === 'rad-cpu' || p.kind === 'rad-gpu') && p.mode === 'wall').map((p) => p.id);
+  return design.parts.filter((p) => (p.kind === 'rad-cpu' || p.kind === 'rad-gpu' || p.kind === 'case-fan') && p.mode === 'wall').map((p) => p.id);
 }

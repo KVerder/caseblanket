@@ -121,6 +121,13 @@ for (const [name, vp, opts] of [
   const slotEyebrow = await page.locator('.eyebrow').first().innerText();
   check(/direct slot/i.test(slotEyebrow), `GPU "in the board slot" gives a direct-slot design (${slotEyebrow})`);
   await page.screenshot({ path: `${out}/gpu-in-slot.png` });
+  await page.locator('summary', { hasText: 'Case fans' }).click();
+  await page.getByRole('radio', { name: '2 × 120 mm' }).click();
+  await page.waitForTimeout(2500);
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+  const fanParts = await page.evaluate(() => window.__caseblanketViewer.partsGroup.children.filter((g) => /^fan-/.test(g.userData.partId)).length);
+  check(fanParts === 2, `"2 × 120 mm" case fans are placed and drawn (${fanParts} in the 3D view)`);
+  await page.screenshot({ path: `${out}/case-fans.png` });
   await ctx.close();
 }
 
