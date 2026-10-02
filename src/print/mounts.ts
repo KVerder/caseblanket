@@ -2,6 +2,7 @@ import type { DesignConfig, MotherboardSpec, PsuSpec } from '../model/types';
 import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, localToWorld, opposite, signOf, wallAxes, type Dir, type Vec3 } from '../solver/geometry';
 import { boardStack } from '../solver/items';
+import { TILT_PLATE } from '../solver/tilt';
 import { shellField, type ShellMesh } from '../solver/shrinkwrap';
 
 /**
@@ -130,8 +131,21 @@ export interface BracketClamp {
   rise: number;
 }
 
+/**
+ * The printed wedge frame of a tilted radiator or case fan, fused to its panel: a plate between the
+ * fans and the panel with an opening and four screw holes per fan, and walls from the plate to the
+ * panel down both sides and across the lifted end. Coordinates are the part's own (see tilt.ts).
+ */
+export interface TiltFrame {
+  label: string;
+  part: Pick<PlacedPart, 'frame' | 'body' | 'tilt'>;
+  fans: { x: number; y: number; r: number }[];
+  holes: { x: number; y: number; d: number }[];
+}
+
 export interface MountPlan {
   standoffs: Standoff[];
+  tiltFrames: TiltFrame[];
   clamp?: BracketClamp;
   bulkheads: Bulkhead[];
   /** Spots on a wall kept solid (no perforation), e.g. under a standoff. */
@@ -147,7 +161,7 @@ export interface MountPlan {
 const PANEL_HOLE_D = 5;
 
 export function mountPlan(design: Design, cfg: DesignConfig): MountPlan {
-  const out: MountPlan = { standoffs: [], bulkheads: [], solid: [], holes: [], openings: [], hardware: [], warnings: [], sources: [] };
+  const out: MountPlan = { standoffs: [], tiltFrames: [], bulkheads: [], solid: [], holes: [], openings: [], hardware: [], warnings: [], sources: [] };
   const src = new Set<string>();
   const F = shellField(design, cfg, cfg.prefs.organic ?? 0);
   const wall = design.wall;
@@ -197,6 +211,31 @@ export function mountPlan(design: Design, cfg: DesignConfig): MountPlan {
       continue;
     }
     src.add(`${p.fan.size} mm fan holes: ${sp.source.text}`);
+    if (p.tilt) {
+      // Tilted: the fans screw to the printed frame plate, not to the panel.
+      const [L, W] = p.tilt.size;
+      const n = p.kind === 'case-fan' ? 1 : (p.fanCount ?? 1);
+      const start = (L - n * p.fan.size) / 2;
+      const tf: TiltFrame = { label: `${p.label} tilt frame (${p.tilt.deg}°)`, part: { frame: p.frame, body: p.body, tilt: p.tilt }, fans: [], holes: [] };
+      for (let i = 0; i < n; i++) {
+        const cx = start + p.fan.size * (i + 0.5);
+        tf.fans.push({ x: cx, y: W / 2, r: Math.min(p.fan.size, W) / 2 - 2 });
+        for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) tf.holes.push({ x: cx + (dx * sp.spacing) / 2, y: W / 2 + (dy * sp.spacing) / 2, d: PANEL_HOLE_D });
+        fanScrews += 4;
+      }
+      out.tiltFrames.push(tf);
+      out.warnings.push(`${tf.label}: its plate leans ${p.tilt.deg}° off the panel; print that panel with supports under the plate (or turn it so the plate stands on the bed).`);
+      out.hardware.push(
+        p.kind === 'case-fan'
+          ? { item: 'Case-fan screw (self-tapping, as supplied with the fan)', qty: 4, note: `${p.label}: through the ${TILT_PLATE} mm frame plate into the fan's corner holes.` }
+          : {
+              item: `Radiator screw, M3 or #6-32 to match your radiator, ≥ ${Math.ceil(p.fan.thickness + TILT_PLATE + 5)} mm`,
+              qty: n * 4,
+              note: `${p.label}: through the ${TILT_PLATE} mm frame plate and the ${p.fan.thickness} mm fan into the radiator.`,
+            },
+      );
+      continue;
+    }
     const a = axisOf(p.face);
     const [xa, ya] = wallAxes(a);
     const [len, wid] = p.size;

@@ -5,6 +5,7 @@ import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, dirVec, localBoxToWorld, signOf, wallAxes, type Box, type Dir, type Vec3 } from '../solver/geometry';
 import { boardStack } from '../solver/items';
 import { shellField } from '../solver/shrinkwrap';
+import { partAxis, partLocal, partPoint, TILT_PLATE } from '../solver/tilt';
 import type { Partition } from '../solver/chambers';
 import { CELL_SOLID, type FanDisk, type HeatSource, type Louvre, type Scene } from './solver';
 
@@ -116,6 +117,40 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
     }
     const out: number[] = [];
     for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) out.push(i + nx * (j + ny * k));
+    return out;
+  };
+  /**
+   * Cells whose centre lies in a box given in a part's own local coordinates (tilted parts
+   * included); a box thinner than a cell is fattened to one cell about its middle.
+   */
+  const cellsInPart = (part: PlacedPart, lo: Vec3, hi: Vec3): number[] => {
+    const l = [...lo] as Vec3;
+    const u = [...hi] as Vec3;
+    for (let a = 0; a < 3; a++)
+      if (u[a] - l[a] < h) {
+        const m = (l[a] + u[a]) / 2;
+        l[a] = m - h / 2;
+        u[a] = m + h / 2;
+      }
+    const wlo: Vec3 = [Infinity, Infinity, Infinity];
+    const whi: Vec3 = [-Infinity, -Infinity, -Infinity];
+    for (const x of [l[0], u[0]]) for (const y of [l[1], u[1]]) for (const z of [l[2], u[2]]) {
+      const w = partPoint(part, [x, y, z]);
+      for (let a = 0; a < 3; a++) {
+        wlo[a] = Math.min(wlo[a], w[a]);
+        whi[a] = Math.max(whi[a], w[a]);
+      }
+    }
+    const i0 = [0, 1, 2].map((a) => Math.max(0, Math.floor((wlo[a] - origin[a]) / h)));
+    const i1 = [0, 1, 2].map((a) => Math.min(n[a] - 1, Math.floor((whi[a] - origin[a]) / h)));
+    const out: number[] = [];
+    for (let k = i0[2]; k <= i1[2]; k++)
+      for (let j = i0[1]; j <= i1[1]; j++)
+        for (let i = i0[0]; i <= i1[0]; i++) {
+          const c = i + nx * (j + ny * k);
+          const q = partLocal(part, centre(c));
+          if (q[0] >= l[0] && q[0] <= u[0] && q[1] >= l[1] && q[1] <= u[1] && q[2] >= l[2] && q[2] <= u[2]) out.push(c);
+        }
     return out;
   };
   const setPorous = (cells: number[], along: number[], low: number, high: number) => {
@@ -254,6 +289,58 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
     geom.fans.push({ slab, center: centreW, axis: ax, sign, radius, group, spec, count });
     return usable;
   };
+  /** A fan disk on a tilted part: its cells, blow direction and thickness follow the part's own axes. */
+  const addTiltedFan = (part: PlacedPart, c1: number, c2: number, radius: number, z0: number, z1: number, blowLocalSign: number, group: string, spec: FanSpec, count: number, frame: [Vec3, Vec3] | null) => {
+    const slab = cellsInPart(part, [c1 - radius, c2 - radius, z0], [c1 + radius, c2 + radius, z1]);
+    const usable = slab.filter((c) => {
+      if (cellType[c] === CELL_SOLID) return false;
+      const q = partLocal(part, centre(c));
+      return Math.hypot(q[0] - c1, q[1] - c2) <= radius + h * 0.35;
+    });
+    if (!usable.length) return [];
+    if (frame) {
+      const keep = new Set(usable);
+      for (const c of cellsInPart(part, frame[0], frame[1])) if (!keep.has(c) && !wallCell[c]) cellType[c] = CELL_SOLID;
+    }
+    const e = partAxis(part, 2);
+    const dir = e.map((x) => x * blowLocalSign) as [number, number, number];
+    const ax = [0, 1, 2].reduce((m, a) => (Math.abs(dir[a]) > Math.abs(dir[m]) ? a : m), 0);
+    const thickness = Math.max(h, z1 - z0);
+    const area = Math.PI * radius * radius;
+    const flow = groupFlow(group)?.flow ?? 0;
+    const layers = Math.max(1, Math.round(thickness / h));
+    const { vmax, a0 } = fanForcing(spec, area, layers, h);
+    const s = groupFlow(group)?.speed ?? 1;
+    const centreW = partPoint(part, [c1, c2, (z0 + z1) / 2]);
+    if (s > 0.02)
+      fans.push({ cells: Int32Array.from(usable), axis: ax, sign: Math.sign(dir[ax]), speed: (flow * 1e9) / count / area, vmax: vmax * s, a0: a0 * s * s, center: toGrid(centreW), swirl: SWIRL, group, layers, pmaxPa: spec.maxPressureMmH2O * MMH2O_TO_PA * s * s, dir, thickness });
+    // Exported along the panel normal (the nearest axis): an approximation for tilted fans.
+    const wb = local(part, [0, 0, 0], part.size);
+    geom.fans.push({ slab: wb, center: centreW, axis: ax, sign: Math.sign(dir[ax]), radius, group, spec, count });
+    return usable;
+  };
+  /**
+   * The printed wedge frame of a tilted part: a plate between the fans and the panel (open over
+   * each fan) and walls down the sides and across the lifted end, from the plate to the panel.
+   */
+  const tiltFrame = (part: PlacedPart, fanCentres: number[], fanR: number) => {
+    const [L, W, T] = part.tilt!.size;
+    const z0 = T - TILT_PLATE;
+    const reach = T + L; // past the panel; cut back to the inside of the shell below
+    const inside = (c: number) => !wallCell[c] && fieldVals[c] < 0;
+    for (const c of cellsInPart(part, [0, 0, z0], [L, W, T])) {
+      if (cellType[c] === CELL_SOLID || !inside(c)) continue;
+      const q = partLocal(part, centre(c));
+      if (fanCentres.some((x) => Math.hypot(q[0] - x, q[1] - W / 2) < fanR)) continue;
+      cellType[c] = CELL_SOLID;
+    }
+    for (const [lo, hi] of [
+      [[0, 0, T], [L, 3, reach]],
+      [[0, W - 3, T], [L, W, reach]],
+      [[L - 3, 0, T], [L, W, reach]],
+    ] as [Vec3, Vec3][])
+      for (const c of cellsInPart(part, lo, hi)) if (inside(c) && cellType[c] !== CELL_SOLID) cellType[c] = CELL_SOLID;
+  };
   /** A fan disk in a part's local frame: centre (c1, c2) on the e3 slab [z0, z1], blowing along ±e3. */
   const addFan = (part: PlacedPart, c1: number, c2: number, radius: number, z0: number, z1: number, blowLocalSign: number, group: string, spec: FanSpec, count = 1, shrouded = true) => {
     const slab = local(part, [c1 - radius, c2 - radius, z0], [c1 + radius, c2 + radius, z1]);
@@ -338,6 +425,33 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
         const ctr: Vec3 = [(slab.min[0] + slab.max[0]) / 2, (slab.min[1] + slab.max[1]) / 2, (slab.min[2] + slab.max[2]) / 2];
         pushFan(slab, ctr, ax, Math.max(W, H), -signOf(part.frame.d[0]), 'psu', 1, null, cfg.parts.psu.fan);
       }
+    } else if ((part.kind === 'rad-cpu' || part.kind === 'rad-gpu') && part.tilt) {
+      // Tilted radiator: the core's flow runs along the part's own e3, which mixes two grid axes;
+      // drag stays low along both of them (the fins' blocking across the length is not represented).
+      const rad = part.radiator!;
+      const fan = part.fan!;
+      const [len, wid] = part.tilt.size;
+      const e3 = partAxis(part, 2);
+      const along = [0, 1, 2].filter((a) => Math.abs(e3[a]) > 0.15);
+      const core = cellsInPart(part, [16, 0, 0], [len - 16, wid, rad.coreThickness]).filter((c) => cellType[c] !== CELL_SOLID);
+      const zeta = cfg.advanced.radLossK * (rad.coreThickness / 27);
+      geom.porous.push({ box: local(part, [0, 0, 0], part.size), along: [axisOf(part.face!)], zeta, thickness: rad.coreThickness, label: `${part.label} core (tilted ${part.tilt.deg}°)` });
+      setPorous(core, along, betaFor(zeta, rad.coreThickness), HIGH);
+      for (const c of [...cellsInPart(part, [0, 0, 0], [16, wid, rad.coreThickness]), ...cellsInPart(part, [len - 16, 0, 0], [len, wid, rad.coreThickness])]) cellType[c] = CELL_SOLID;
+      const g = groupFlow(part.id);
+      heat.push({ id: part.id, label: g?.label ?? part.label, cells: Int32Array.from(core), watts: g?.heatW ?? 0 });
+      const blow = fanDir(part) === 'in' ? -1 : 1;
+      const nF = part.fanCount ?? rad.fanCount;
+      const start = (len - nF * fan.size) / 2;
+      const fanTop = rad.coreThickness + Math.max(fan.thickness, h);
+      const r = Math.min(fan.size, wid) / 2 - 2;
+      const centres: number[] = [];
+      for (let i = 0; i < nF; i++) {
+        const cx = start + fan.size * (i + 0.5);
+        centres.push(cx);
+        addTiltedFan(part, cx, wid / 2, r, rad.coreThickness, fanTop, blow, part.id, fan, nF, null);
+      }
+      tiltFrame(part, centres, r);
     } else if (part.kind === 'rad-cpu' || part.kind === 'rad-gpu') {
       const rad = part.radiator!;
       const fan = part.fan!;
@@ -356,6 +470,15 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
       for (let i = 0; i < nF; i++) disks.push(...addFan(part, start + fan.size * (i + 0.5), wid / 2, Math.min(fan.size, wid) / 2 - 2, rad.coreThickness, fanTop, blow, part.id, fan, nF, false));
       // One frame across the whole fan row.
       shroud(local(part, [0, 0, rad.coreThickness], [len, wid, fanTop]), disks);
+    } else if (part.kind === 'case-fan' && part.tilt) {
+      const fan = part.fan!;
+      const [len, wid, T] = part.tilt.size;
+      const r = Math.min(len, wid) / 2 - 2;
+      addTiltedFan(part, len / 2, wid / 2, r, 0, Math.max(T - TILT_PLATE, h), fanDir(part) === 'in' ? -1 : 1, part.id, fan, 1, [
+        [0, 0, 0],
+        [len, wid, T - TILT_PLATE],
+      ]);
+      tiltFrame(part, [len / 2], r);
     } else if (part.kind === 'case-fan') {
       // +e3 points at the vented wall, as for a radiator's fans; the frame around the disk is solid.
       const fan = part.fan!;
@@ -513,7 +636,7 @@ export function louvreCandidates(design: Design): { vent: number; toward: Dir }[
 
 /** Parts whose fan could get a duct to its vent. */
 export function ductCandidates(design: Design): string[] {
-  return design.parts.filter((p) => p.face !== undefined && p.faceAtWall && p.mode !== 'through' && p.faceGap > 2).map((p) => p.id);
+  return design.parts.filter((p) => p.face !== undefined && p.faceAtWall && p.mode !== 'through' && p.faceGap > 2 && !p.tilt).map((p) => p.id);
 }
 
 /** Radiators and case fans whose direction the optimiser may reverse. */

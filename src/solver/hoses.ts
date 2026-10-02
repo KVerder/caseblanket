@@ -1,6 +1,7 @@
 import type { DesignConfig } from '../model/types';
 import type { Design, PlacedPart } from './evaluate';
 import { dirVec, localBoxToWorld, localToWorld, sideToWorld, axisOf, signOf, type Box, type Dir, type Vec3 } from './geometry';
+import { partPoint } from './tilt';
 import { boardStack } from './items';
 
 /** Outer radius of an AIO hose, mm (typical ~12 mm sleeved tubing; estimate). */
@@ -68,8 +69,10 @@ function pair(design: Design, from: Vec3, fromDir: Vec3, rad: PlacedPart, reachO
   const side: Vec3 = Math.abs(fromDir[2]) > 0.9 ? [0, 1, 0] : [0, 0, 1];
   const out: HosePath[] = [];
   for (const off of [-9, 9]) {
-    const port = localToWorld(rad.frame, rad.body, [rad.size[0] + 4, rad.size[1] / 2 + off * 1.5, r.coreThickness / 2]);
-    const portOut = norm(sub(localToWorld(rad.frame, rad.body, [rad.size[0] + 40, rad.size[1] / 2 + off * 1.5, r.coreThickness / 2]), port));
+    // Ports at the +e1 end (tilted radiators: the end lifted off the panel).
+    const size = rad.tilt?.size ?? rad.size;
+    const port = partPoint(rad, [size[0] + 4, size[1] / 2 + off * 1.5, r.coreThickness / 2]);
+    const portOut = norm(sub(partPoint(rad, [size[0] + 40, size[1] / 2 + off * 1.5, r.coreThickness / 2]), port));
     const a = clamp(add(from, side, off * 0.8));
     const b = clamp(add(a, fromDir, Math.max(12, Math.min(35, reachOut * 0.9))));
     const c = clamp(add(port, portOut, portReach));

@@ -4,6 +4,7 @@ import type { DesignConfig } from '../model/types';
 import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, localBoxToWorld, localToWorld, type Vec3 } from '../solver/geometry';
 import { boardStack } from '../solver/items';
+import { partPoint, TILT_PLATE } from '../solver/tilt';
 import type { WorldMap } from './mapping';
 
 export const PART_COLORS: Record<string, string> = {
@@ -168,7 +169,33 @@ export function buildRadiator(b: PartBuilder, part: PlacedPart) {
 
 export function buildCaseFan(b: PartBuilder, part: PlacedPart) {
   const [len, wid, thick] = part.size;
-  fan(b, part, len / 2, wid / 2, 0, Math.min(len, wid), thick);
+  fan(b, part, len / 2, wid / 2, 0, Math.min(len, wid), part.fan?.thickness ?? thick);
+}
+
+/**
+ * A tilted part: the same as `part` laid flat in its box (`flat`), and the world transform (in
+ * render space) that tilts it into place. Build the part's meshes on `flat`, then apply the matrix.
+ */
+export function tiltedPose(map: WorldMap, part: PlacedPart): { flat: PlacedPart; matrix: THREE.Matrix4 } | null {
+  if (!part.tilt) return null;
+  const size = part.tilt.size;
+  const body = { min: [...part.body.min] as Vec3, max: [...part.body.min] as Vec3 };
+  for (let i = 0; i < 3; i++) body.max[axisOf(part.frame.d[i])] = body.min[axisOf(part.frame.d[i])] + size[i];
+  const flat: PlacedPart = { ...part, body, size, tilt: undefined };
+  const basis = (f: (p: Vec3) => Vec3) => {
+    const o = map.point(f([0, 0, 0]));
+    const e = ([[1, 0, 0], [0, 1, 0], [0, 0, 1]] as Vec3[]).map((p) => map.point(f(p)).sub(o));
+    return new THREE.Matrix4().makeBasis(e[0], e[1], e[2]).setPosition(o);
+  };
+  const A = basis((p) => localToWorld(flat.frame, flat.body, p));
+  const B = basis((p) => partPoint(part, p));
+  return { flat, matrix: B.multiply(A.invert()) };
+}
+
+/** The printed wedge frame's plate, between the fans and the panel. */
+export function buildTiltPlate(b: PartBuilder, flat: PlacedPart) {
+  const [L, W, T] = flat.size;
+  b.box(flat, [0, 0, T - TILT_PLATE], [L, W, T], mat('#c27a3e', { rough: 0.7, opacity: 0.55 }));
 }
 
 export function buildExtra(b: PartBuilder, part: PlacedPart) {

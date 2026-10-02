@@ -20,6 +20,7 @@ import {
   type Rect,
   type Vec3,
 } from './geometry';
+import { tiltMeanGap, type Tilt } from './tilt';
 import { allowedFaceDirs, boardStack, isTwoLayer, type ItemDef, type ItemKind, type LayerId, type Profile } from './items';
 import { interiorThickness, type PackNode } from './pack';
 import type { WrapMetrics } from './shrinkwrap';
@@ -80,6 +81,8 @@ export interface PlacedPart {
   radiator?: RadiatorSpec;
   fan?: FanSpec;
   fanCount?: number;
+  /** Tilted against its panel on a printed wedge frame (radiators and case fans). */
+  tilt?: Tilt;
   /** Set after the airflow solve for parts that move air. */
   airflow?: 'in' | 'out' | 'through' | 'internal';
 }
@@ -262,6 +265,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
         radiator: vp.radiator,
         fan: vp.fan,
         fanCount: vp.fanCount,
+        tilt: vp.tilt,
       });
     }
   }
@@ -563,6 +567,16 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     return { groups, internalHeat, heatByPart, caseComps, compPart, radHeat, radComp };
   };
 
+  /**
+   * A tilted part: air turns by the tilt angle between the panel and the fans, inside the frame's
+   * wedge. Weisbach's sharp-elbow loss, ζ = 0.946·sin²(δ/2) + 2.047·sin⁴(δ/2), on the fan area.
+   */
+  const tiltTurn = (p: PlacedPart, area: number): LossTerm[] => {
+    if (!p.tilt) return [];
+    const s2 = Math.sin((p.tilt.deg * Math.PI) / 360) ** 2;
+    return [{ label: 'tilt turn', zeta: 0.946 * s2 + 2.047 * s2 * s2, area }];
+  };
+
   // Radiators (direction decided below)
   const radGroup = (p: PlacedPart, dir: 'in' | 'out' | 'through', heat: number, component: ComponentSpec): FanGroupInput => {
     const rad = p.radiator!;
@@ -570,7 +584,8 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     const coreArea = rad.length * rad.width * MM2;
     const losses: LossTerm[] = [
       { label: 'radiator core', zeta: advanced.radLossK * (rad.coreThickness / 27), area: coreArea },
-      { label: 'fan proximity', zeta: prox(p.faceAtWall ? p.faceGap : 0, fan), area: fanArea(fan, p.fanCount!) },
+      { label: 'fan proximity', zeta: prox(p.faceAtWall ? p.faceGap + tiltMeanGap(p.tilt) : 0, fan), area: fanArea(fan, p.fanCount!) },
+      ...tiltTurn(p, fanArea(fan, p.fanCount!)),
     ];
     if (p.faceAtWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor(p.id, p.face) }, ...floorGap(p.id, p.face));
     else losses.push({ label: 'blocked face', zeta: 40, area: coreArea });
@@ -600,7 +615,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     const fan = p.fan!;
     const area = fanArea(fan, 1);
     const plen = cfg.advanced.radPlenumGap + profile.extraGap;
-    const losses: LossTerm[] = [{ label: 'fan proximity', zeta: prox(p.faceAtWall ? p.faceGap : 0, fan), area }];
+    const losses: LossTerm[] = [{ label: 'fan proximity', zeta: prox(p.faceAtWall ? p.faceGap + tiltMeanGap(p.tilt) : 0, fan), area }, ...tiltTurn(p, area)];
     if (p.faceAtWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor(p.id, p.face) }, ...floorGap(p.id, p.face));
     else losses.push({ label: 'blocked face', zeta: 40, area });
     losses.push({ label: 'plenum', zeta: 1, area: Math.min(area, 4 * fan.size * plen * MM2) });
@@ -718,8 +733,8 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
 
   // ---- fan speeds and noise, at each load
   const fanMeta: Record<string, { fan: FanSpec; count: number; gap: number; atWall: boolean; label: string }> = {};
-  for (const p of radParts) fanMeta[p.id] = { fan: p.fan!, count: p.fanCount!, gap: p.faceGap, atWall: p.faceAtWall, label: `${p.label} fans` };
-  for (const p of fanParts) fanMeta[p.id] = { fan: p.fan!, count: 1, gap: p.faceGap, atWall: p.faceAtWall, label: p.label };
+  for (const p of radParts) fanMeta[p.id] = { fan: p.fan!, count: p.fanCount!, gap: p.faceGap + tiltMeanGap(p.tilt), atWall: p.faceAtWall, label: `${p.label} fans` };
+  for (const p of fanParts) fanMeta[p.id] = { fan: p.fan!, count: 1, gap: p.faceGap + tiltMeanGap(p.tilt), atWall: p.faceAtWall, label: p.label };
   if (cooler.kind !== 'aio') fanMeta.cpu = { fan: cooler.fan, count: 1, gap: board.faceGap, atWall: board.faceAtWall && vents.some((v) => v.groupId === 'cpu'), label: 'CPU cooler fan' };
   if (gpuSpec.cardFan) fanMeta['gpu-card'] = { fan: gpuSpec.cardFanSpec, count: 1, gap: gpu.faceGap, atWall: gpu.faceAtWall && vents.some((v) => v.groupId === 'gpu'), label: 'Graphics card fan' };
   const psuMeta = { fan: psuSpec.fan, gap: psu.faceGap, atWall: psu.faceAtWall };

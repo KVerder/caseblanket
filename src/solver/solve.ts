@@ -1,4 +1,5 @@
 import type { DesignConfig, TopologyId } from '../model/types';
+import { TILT_ANGLES } from './tilt';
 import { evaluate, type Design } from './evaluate';
 import { buildItems, isDirect, isTwoLayer, PROFILES, type Profile } from './items';
 import { pack } from './pack';
@@ -90,18 +91,35 @@ export function solve(cfg: DesignConfig, opts: SolveOptions = {}): SolveResult {
   let runs = 0;
   for (const topology of topologies) {
     for (const profile of profiles) {
-      const items = buildItems({ cfg, topology, profile });
-      const nodes = pack(items, {
-        twoLayer: isTwoLayer(topology),
-        spine: cfg.prefs.spineThickness,
-        wall: cfg.prefs.wallThickness,
-        alpha: cfg.prefs.thinnessPriority,
-        beamWidth,
-        limits,
-        riserLength: isDirect(topology) ? 0 : cfg.prefs.riserLength,
-        requireBack: isTwoLayer(topology),
-      });
-      nodes.slice(0, perRun).forEach((n, i) => all.push(evaluate(n, { cfg, topology, profile, items }, i)));
+      const built = buildItems({ cfg, topology, profile });
+      // One packing run with every radiator and case fan flat on its panel, then one per tilt angle
+      // with them all at that angle: a tilted part's bounding box is always larger, so in a shared
+      // run the beam would drop every tilted layout before it is evaluated.
+      const tiltable = built.some((it) => it.variants.some((v) => v.parts.some((p) => p.tilt)));
+      for (const deg of tiltable ? TILT_ANGLES : [0]) {
+        const items = built.map((it) => {
+          if (!it.variants.some((v) => v.parts.some((p) => p.tilt))) return it;
+          // Tilted runs: only that angle (a radiator on through-mode or flat would repeat the flat run).
+          const variants = it.variants.filter((v) => v.parts.every((p) => (p.tilt?.deg ?? 0) === deg));
+          if (!variants.length) return it;
+          return { ...it, variants, minArea: Math.min(...variants.map((v) => v.w * v.h)), minT: Math.min(...variants.map((v) => v.minT)) };
+        });
+        const nodes = pack(items, {
+          twoLayer: isTwoLayer(topology),
+          spine: cfg.prefs.spineThickness,
+          wall: cfg.prefs.wallThickness,
+          alpha: cfg.prefs.thinnessPriority,
+          beamWidth: deg ? Math.ceil(beamWidth / 2) : beamWidth,
+          limits,
+          riserLength: isDirect(topology) ? 0 : cfg.prefs.riserLength,
+          requireBack: isTwoLayer(topology),
+        });
+        nodes.slice(0, deg ? Math.ceil(perRun / 3) : perRun).forEach((n, i) => {
+          const d = evaluate(n, { cfg, topology, profile, items }, i);
+          if (deg) d.id += `-tilt${deg}`;
+          all.push(d);
+        });
+      }
       runs++;
       opts.onProgress?.(runs, total);
     }

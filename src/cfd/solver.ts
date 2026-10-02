@@ -33,6 +33,13 @@ export interface FanDisk {
   layers?: number;
   /** Stall pressure, Pa. */
   pmaxPa?: number;
+  /**
+   * Tilted disk: unit blow direction and the disk's thickness (mm). The jump is then spread as a
+   * body force over the thickness and applied on the faces of every axis the direction has a share
+   * of; `axis`/`sign` are the dominant axis (used for the swirl).
+   */
+  dir?: [number, number, number];
+  thickness?: number;
 }
 
 /** Turns air leaving a vent toward a direction (exhaust deflector / louvre). */
@@ -313,27 +320,35 @@ export class FlowSolver {
    * implicitly inside the pressure projection (each fan face gets a reduced conductance
    * w = 1/(1 + R/h) and a source), so it holds at any time step.
    */
-  private fanFaces: { arr: 0 | 1 | 2; face: number; sign: number; fan: number; share: number }[] | null = null;
+  private fanFaces: { arr: 0 | 1 | 2; face: number; sign: number; fan: number; share: number; nq: number }[] | null = null;
 
   private buildFanFaces() {
     const { nx, ny } = this;
     const out: NonNullable<typeof this.fanFaces> = [];
     this.s.fans.forEach((f, fi) => {
-      const share = 1 / Math.max(1, f.layers ?? 1);
+      // Axis-aligned disk: the jump on its own axis, shared between its layers. Tilted disk: a body
+      // force along `dir` over its thickness, on the faces of each axis by that axis's share.
+      const parts: { axis: number; sign: number; share: number; nq: number }[] = f.dir
+        ? [0, 1, 2]
+            .filter((q) => Math.abs(f.dir![q]) > 0.15)
+            .map((q) => ({ axis: q, sign: Math.sign(f.dir![q]), nq: Math.abs(f.dir![q]), share: (Math.abs(f.dir![q]) * this.h) / Math.max(this.h, f.thickness ?? this.h) }))
+        : [{ axis: f.axis, sign: f.sign, share: 1 / Math.max(1, f.layers ?? 1), nq: 1 }];
       for (const c of f.cells) {
         const i = c % nx;
         const j = Math.floor(c / nx) % ny;
         const k = Math.floor(c / (nx * ny));
-        // Face on the downstream side of the cell.
-        const fIdx = [i, j, k];
-        if (f.sign > 0) fIdx[f.axis] += 1;
-        const n = [this.nx, this.ny, this.nz][f.axis];
-        if (fIdx[f.axis] <= 0 || fIdx[f.axis] >= n) continue;
-        const m = [...fIdx];
-        m[f.axis] -= 1;
-        if (this.s.cellType[this.cell(m[0], m[1], m[2])] === CELL_SOLID || this.s.cellType[this.cell(fIdx[0], fIdx[1], fIdx[2])] === CELL_SOLID) continue;
-        const face = f.axis === 0 ? this.iu(fIdx[0], fIdx[1], fIdx[2]) : f.axis === 1 ? this.iv(fIdx[0], fIdx[1], fIdx[2]) : this.iw(fIdx[0], fIdx[1], fIdx[2]);
-        out.push({ arr: f.axis as 0 | 1 | 2, face, sign: f.sign, fan: fi, share });
+        for (const pa of parts) {
+          // Face on the downstream side of the cell.
+          const fIdx = [i, j, k];
+          if (pa.sign > 0) fIdx[pa.axis] += 1;
+          const n = [this.nx, this.ny, this.nz][pa.axis];
+          if (fIdx[pa.axis] <= 0 || fIdx[pa.axis] >= n) continue;
+          const m = [...fIdx];
+          m[pa.axis] -= 1;
+          if (this.s.cellType[this.cell(m[0], m[1], m[2])] === CELL_SOLID || this.s.cellType[this.cell(fIdx[0], fIdx[1], fIdx[2])] === CELL_SOLID) continue;
+          const face = pa.axis === 0 ? this.iu(fIdx[0], fIdx[1], fIdx[2]) : pa.axis === 1 ? this.iv(fIdx[0], fIdx[1], fIdx[2]) : this.iw(fIdx[0], fIdx[1], fIdx[2]);
+          out.push({ arr: pa.axis as 0 | 1 | 2, face, sign: pa.sign, fan: fi, share: pa.share, nq: pa.nq });
+        }
       }
     });
     this.fanFaces = out;
@@ -375,7 +390,8 @@ export class FlowSolver {
     for (const ff of this.fanFaces!) {
       const f = this.s.fans[ff.fan];
       const pm = pmaxPa(f, this.h) * kin * ff.share;
-      const R = pm / f.vmax; // mm
+      // Δp falls with the speed along the disk normal, v_n ≈ v_q / n_q on this face.
+      const R = pm / (f.vmax * ff.nq); // mm
       const D = W[ff.arr][ff.face];
       const w = D / (1 + (D * R) / this.h);
       W[ff.arr][ff.face] = w;

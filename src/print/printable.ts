@@ -1,6 +1,7 @@
 import type { DesignConfig } from '../model/types';
 import type { Design } from '../solver/evaluate';
 import { axisOf, signOf, wallAxes, type Box, type Vec3 } from '../solver/geometry';
+import { partLocal, TILT_PLATE } from '../solver/tilt';
 import { meshGrid, shellField, type Grid, type ShellMesh } from '../solver/shrinkwrap';
 import { PARTITION_THICKNESS } from '../solver/chambers';
 import { plateMesh } from '../solver/partitions';
@@ -181,10 +182,36 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
     const [xa, ya] = wallAxes(b.axis);
     return { ...b, xa, ya };
   });
+  const frames = (plan?.tiltFrames ?? []).map((tf) => ({ ...tf, reach: tf.part.tilt!.size[2] + tf.part.tilt!.size[0] }));
+  /** Tilted parts' wedge frames (their own coordinates), kept inside the shell so they fuse to the wall. */
+  const frameSdf = (p: Vec3, f: number) => {
+    let best = Infinity;
+    for (const tf of frames) {
+      const near = boxSdf(p, tf.part.body);
+      if (near > 6) {
+        best = Math.min(best, near);
+        continue;
+      }
+      const q = partLocal(tf.part, p);
+      const [L, W, T] = tf.part.tilt!.size;
+      let plate = boxSdf(q, { min: [0, 0, T - TILT_PLATE], max: [L, W, T] });
+      for (const o of tf.fans) plate = Math.max(plate, o.r - Math.hypot(q[0] - o.x, q[1] - o.y));
+      for (const h of tf.holes) plate = Math.max(plate, h.d / 2 - Math.hypot(q[0] - h.x, q[1] - h.y));
+      const walls = Math.min(
+        boxSdf(q, { min: [0, 0, T - TILT_PLATE], max: [L, 3, tf.reach] }),
+        boxSdf(q, { min: [0, W - 3, T - TILT_PLATE], max: [L, W, tf.reach] }),
+        boxSdf(q, { min: [L - 3, 0, T - TILT_PLATE], max: [L, W, tf.reach] }),
+      );
+      // Only inside the wall's mid-plane, so it joins the wall and never sticks out of the case.
+      best = Math.min(best, Math.max(Math.min(plate, walls), f + wall / 2));
+    }
+    return best;
+  };
   return (p: Vec3) => {
     const f = F(p);
     // Band between the outer surface and one wall in.
     let d = Math.abs(f + wall / 2) - wall / 2;
+    const tframe = frames.length ? frameSdf(p, f) : Infinity;
     // Bulkhead plates (fused to the wall), with their own holes and opening.
     let plate = Infinity;
     for (const b of bulk) {
@@ -197,7 +224,7 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
       if (b.opening) e = Math.max(e, -Math.max(b.opening.x0 - p[b.xa], p[b.xa] - b.opening.x1, b.opening.y0 - p[b.ya], p[b.ya] - b.opening.y1));
       plate = Math.min(plate, e);
     }
-    if (d > 3) return Math.min(d, plate);
+    if (d > 3) return Math.min(d, plate, tframe);
     for (const c of cuts) {
       const x = p[c.xa];
       const y = p[c.ya];
@@ -228,7 +255,7 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
       if (!onWall(h.map, p, h.a, h.x, h.y)) continue;
       d = Math.max(d, h.r - Math.hypot(x - h.x, y - h.y));
     }
-    return Math.min(d, plate);
+    return Math.min(d, plate, tframe);
   };
 }
 

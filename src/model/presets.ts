@@ -455,6 +455,7 @@ export const DEFAULT_PREFS: Preferences = {
   ventPanels: { front: true, back: true, left: true, right: true, top: true, bottom: true },
   radDirection: 'auto',
   allowSlimFans: true,
+  allowTilt: true,
   orientation: 'tower',
   topologies: { flat: true, sandwich: true, direct: true, 'direct-stack': true },
   riserLength: 200,

@@ -20,6 +20,8 @@ import {
   buildPsu,
   buildRadiator,
   buildCaseFan,
+  buildTiltPlate,
+  tiltedPose,
   buildRouted,
   clearanceGhost,
   PART_COLORS,
@@ -502,7 +504,14 @@ void main() {
     for (const part of design.parts) {
       const g = new THREE.Group();
       const b = new PartBuilder(map, g);
-      if (part.kind === 'board') buildBoard(b, part, cfg, extraGap);
+      const pose = tiltedPose(map, part);
+      if (pose) {
+        // Tilted radiator or case fan: built flat, then tilted into place with its frame plate.
+        if (part.kind === 'case-fan') buildCaseFan(b, pose.flat);
+        else buildRadiator(b, pose.flat);
+        buildTiltPlate(b, pose.flat);
+        for (const m of g.children) m.applyMatrix4(pose.matrix);
+      } else if (part.kind === 'board') buildBoard(b, part, cfg, extraGap);
       else if (part.kind === 'gpu') buildGpu(b, part, cfg);
       else if (part.kind === 'psu') buildPsu(b, part, cfg);
       else if (part.kind === 'rad-cpu' || part.kind === 'rad-gpu') buildRadiator(b, part);

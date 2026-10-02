@@ -1,4 +1,5 @@
 import { SLIM_RAD_FAN } from '../model/presets';
+import { TILT_ANGLES, TILT_PLATE, tiltDims, type Tilt } from './tilt';
 import type { DesignConfig, FanSpec, RadiatorSpec, TopologyId } from '../model/types';
 import {
   allFrames,
@@ -54,6 +55,8 @@ export interface VariantPart {
   fan?: FanSpec;
   fanCount?: number;
   radiator?: RadiatorSpec;
+  /** Tilted against its panel (radiators and case fans on a wall). */
+  tilt?: Tilt;
 }
 
 export interface Variant {
@@ -355,6 +358,11 @@ function psuVariants(ctx: BuildContext, layers: LayerId[]): Variant[] {
   return dedupe(out, (v) => `${v.layer}|${v.parts[0].o.ext.join(',')}|${v.parts[0].face}|${sideToWorld(v.parts[0].o.frame, 0)}`);
 }
 
+/** Tilt angles to try against a panel (flat only, unless tilting is allowed). */
+function tiltsFor(cfg: DesignConfig): number[] {
+  return cfg.prefs.allowTilt === false ? [0] : TILT_ANGLES;
+}
+
 function radVariants(
   ctx: BuildContext,
   kind: 'rad-cpu' | 'rad-gpu',
@@ -384,32 +392,36 @@ function radVariants(
         tol,
         [4],
       );
-      const o = orient(size, frame, clears);
-      out.push(
-        makeVariant(
-          layer,
-          [
-            {
-              kind,
-              o,
-              du: 0,
-              dv: 0,
-              align: alignFor(layer, face),
-              face,
-              faceRequired: true,
-              faceGap: wallGap,
-              mode: through ? 'through' : 'wall',
-              fan,
-              fanCount: rad.fanCount,
-              radiator: rad,
-            },
-          ],
-          face === 1,
-        ),
-      );
+      for (const deg of through ? [0] : tiltsFor(cfg)) {
+        const tilt: Tilt | undefined = deg > 0 ? { deg, size: [size[0], size[1], size[2] + TILT_PLATE] } : undefined;
+        const o = orient(tilt ? tiltDims(tilt.size, deg) : size, frame, clears);
+        out.push(
+          makeVariant(
+            layer,
+            [
+              {
+                kind,
+                o,
+                du: 0,
+                dv: 0,
+                align: alignFor(layer, face),
+                face,
+                faceRequired: true,
+                faceGap: wallGap,
+                mode: through ? 'through' : 'wall',
+                fan,
+                fanCount: rad.fanCount,
+                radiator: rad,
+                tilt,
+              },
+            ],
+            face === 1,
+          ),
+        );
+      }
     }
   }
-  return dedupe(out, (v) => `${v.layer}|${v.parts[0].o.ext.join(',')}|${v.parts[0].face}|${sideToWorld(v.parts[0].o.frame, 0)}`);
+  return dedupe(out, (v) => `${v.layer}|${v.parts[0].o.ext.join(',')}|${v.parts[0].face}|${sideToWorld(v.parts[0].o.frame, 0)}|${v.parts[0].tilt?.deg ?? 0}`);
 }
 
 /** A case fan screwed to a vented panel, with a plenum behind it like a radiator's. */
@@ -431,20 +443,23 @@ function caseFanVariants(ctx: BuildContext, fan: FanSpec, layers: LayerId[], all
   for (const frame of allFrames()) {
     const face = sideToWorld(frame, 4);
     if (!allowed.has(face)) continue;
-    const o = orient(size, frame, clears);
-    for (const layer of layers) {
-      if (!faceAllowed(layer, face)) continue;
-      out.push(
-        makeVariant(
-          layer,
-          [{ kind: 'case-fan', o, du: 0, dv: 0, align: alignFor(layer, face), face, faceRequired: true, faceGap: wallGap, mode: 'wall', fan, fanCount: 1 }],
-          face === 1,
-        ),
-      );
+    for (const deg of tiltsFor(cfg)) {
+      const tilt: Tilt | undefined = deg > 0 ? { deg, size: [size[0], size[1], size[2] + TILT_PLATE] } : undefined;
+      const o = orient(tilt ? tiltDims(tilt.size, deg) : size, frame, clears);
+      for (const layer of layers) {
+        if (!faceAllowed(layer, face)) continue;
+        out.push(
+          makeVariant(
+            layer,
+            [{ kind: 'case-fan', o, du: 0, dv: 0, align: alignFor(layer, face), face, faceRequired: true, faceGap: wallGap, mode: 'wall', fan, fanCount: 1, tilt }],
+            face === 1,
+          ),
+        );
+      }
     }
   }
-  // A square fan looks the same turned about its axis.
-  return dedupe(out, (v) => `${v.layer}|${v.parts[0].o.ext.join(',')}|${v.parts[0].face}`);
+  // A square fan looks the same turned about its axis (untilted).
+  return dedupe(out, (v) => `${v.layer}|${v.parts[0].o.ext.join(',')}|${v.parts[0].face}|${v.parts[0].tilt ? sideToWorld(v.parts[0].o.frame, 0) : ''}|${v.parts[0].tilt?.deg ?? 0}`);
 }
 
 function extraVariants(ctx: BuildContext, e: { x: number; y: number; z: number }, layers: LayerId[]): Variant[] {

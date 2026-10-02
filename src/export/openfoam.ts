@@ -19,6 +19,8 @@ import { meshShell, shellField, ventMask, type ShellMesh } from '../solver/shrin
  *   fans            cyclic baffles with a fan pressure jump from the fan curve (Pmax at 0, 0 at free-air speed)
  *   heat            volumetric enthalpy sources in each heat source's cellZone
  *   partitions      wall baffles
+ *   tilted parts    radiators and case fans tilted on a wedge frame are exported along their panel's
+ *                   normal (an approximation; the app's own 3D simulation tilts them)
  *
  * Function objects write what the app compares against: volume flow through each fan, the
  * flow-weighted temperature entering it, the mean temperature in each heat source, and a passive

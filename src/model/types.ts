@@ -226,6 +226,8 @@ export interface Preferences {
   ventPanels: Record<PanelName, boolean>;
   radDirection: RadDirection;
   allowSlimFans: boolean;
+  /** Let radiators and case fans tilt against their panel (15, 30, 45°) on a printed wedge frame. */
+  allowTilt: boolean;
   orientation: Orientation;
   topologies: Record<TopologyId, boolean>;
   riserLength: number;

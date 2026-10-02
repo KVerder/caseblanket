@@ -206,6 +206,7 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
           onChange={(v) => set('radDirection', v)}
         />
         <Toggle id="slim" label="Allow 15 mm slim radiator fans" checked={p.allowSlimFans} onChange={(v) => set('allowSlimFans', v)} />
+        <Toggle id="tilt" label="Allow tilted radiators and case fans (15°, 30°, 45°)" checked={p.allowTilt} onChange={(v) => set('allowTilt', v)} />
         <Toggle id="filters" label="Dust filters on vents" checked={p.dustFilters} onChange={(v) => set('dustFilters', v)} />
       </Section>
 
