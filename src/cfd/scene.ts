@@ -1,6 +1,6 @@
 import { VENT_STYLES } from '../model/presets';
 import type { DesignConfig, FanSpec } from '../model/types';
-import { MMH2O_TO_PA, perforatedPlateZeta } from '../solver/airflow';
+import { FLOOR_GAP_ZETA, MMH2O_TO_PA, perforatedPlateZeta } from '../solver/airflow';
 import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, dirVec, localBoxToWorld, signOf, wallAxes, type Box, type Dir, type Vec3 } from '../solver/geometry';
 import { boardStack } from '../solver/items';
@@ -46,6 +46,10 @@ export interface SceneGeometry {
   heat: { id: string; label: string; box: Box; watts: number }[];
   fans: { slab: Box; center: Vec3; axis: number; sign: number; radius: number; group: string; spec: FanSpec; count: number }[];
   partitions?: Partition[];
+  /** The desk or floor the case stands on: solid below `at` along the up axis. */
+  floor?: { axis: number; at: number; feet: number };
+  /** Cells of the footprint edge carrying the short-feet contraction loss. */
+  floorRing?: number;
 }
 
 /**
@@ -73,8 +77,16 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
   const target = opts.cells ?? 45000;
   const span: Vec3 = [design.interior[0] + 2 * margin, design.interior[1] + 2 * margin, design.interior[2] + 2 * margin];
   const h = Math.max(6, Math.cbrt((span[0] * span[1] * span[2]) / target));
+  // The case stands on a desk or floor: one solid layer of cells under its feet, no room air below.
+  // The gap under the shell is at least one cell; when the real feet are shorter, the extra
+  // contraction is added as drag where air crosses the edge of the footprint (below).
+  const up = upAxis(cfg).axis;
+  const gapCells = design.feet > 0 ? Math.max(1, Math.round(design.feet / h)) : 0;
+  const floorTop = -design.wall - gapCells * h;
+  span[up] = design.interior[up] + margin - (floorTop - h);
   const n = span.map((s) => Math.max(4, Math.ceil(s / h))) as [number, number, number];
   const origin: [number, number, number] = [-margin, -margin, -margin];
+  origin[up] = floorTop - h;
   const [nx, ny, nz] = n;
   const total = nx * ny * nz;
   const cellType = new Uint8Array(total);
@@ -149,8 +161,14 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
     return [g[0] / l, g[1] / l, g[2] / l];
   };
   const wallCell = new Uint8Array(total);
+  const layer = (c: number) => (up === 0 ? c % nx : up === 1 ? Math.floor(c / nx) % ny : Math.floor(c / (nx * ny)));
   for (let c = 0; c < total; c++) {
     const f = fieldVals[c];
+    if (layer(c) === 0) {
+      cellType[c] = CELL_SOLID; // the floor
+      continue;
+    }
+    if (layer(c) <= gapCells) continue; // air under the case, between its feet
     if (f < -wall - 0.5 * h) {
       interior.push(c);
       continue;
@@ -175,6 +193,29 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
       cellType[c] = CELL_SOLID;
     }
   }
+
+  // Feet shorter than a cell: the gap is modelled one cell tall, so air crossing the edge of the
+  // footprint gets the extra contraction loss ζ·((cell / feet)² − 1), ζ = FLOOR_GAP_ZETA.
+  if (gapCells > 0 && design.feet < gapCells * h) {
+    const zeta = FLOOR_GAP_ZETA * ((gapCells * h) / design.feet) ** 2 - FLOOR_GAP_ZETA;
+    const b = betaFor(zeta, h);
+    const stride = [1, nx, nx * ny];
+    const under = (c: number) => fieldVals[c + (gapCells + 1 - layer(c)) * stride[up]] <= 0.5 * h;
+    const inPlane = [0, 1, 2].filter((a) => a !== up);
+    const idx = (c: number, a: number) => (a === 0 ? c % nx : a === 1 ? Math.floor(c / nx) % ny : Math.floor(c / (nx * ny)));
+    for (let c = 0; c < total; c++) {
+      const l = layer(c);
+      if (l < 1 || l > gapCells || !under(c)) continue;
+      const edge = inPlane.some((a) => [-1, 1].some((d) => {
+        const i = idx(c, a) + d;
+        return i < 0 || i >= n[a] || !under(c + d * stride[a]);
+      }));
+      if (!edge) continue;
+      for (const a of inPlane) beta[a][c] = Math.max(beta[a][c], b);
+      geom.floorRing = (geom.floorRing ?? 0) + 1;
+    }
+  }
+  geom.floor = { axis: up, at: floorTop, feet: design.feet };
 
   // ------------------------------------------------ parts
   const fans: FanDisk[] = [];

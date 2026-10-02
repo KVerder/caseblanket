@@ -4,7 +4,7 @@ import { bpf, fanAcoustics, fanLw, HEMISPHERE_DB, obstructionPenalty, sumDb, ven
 import { coolestWithin, noiseTotal, quietestSafe, type NoiseResult, type SpeedControl } from './fanspeeds';
 import { CASE_LEAK, PARTITION_THICKNESS, chamberLayouts, ventAreaIn, wallShare, type ChamberLayout } from './chambers';
 import { HOSE_MIN_BEND, hosePaths, minBendRadius, pathLength } from './hoses';
-import { flowNetwork, perforatedPlateZeta, solveNetwork, type NetworkInput, type ComponentSpec, type Endpoint, type FanGroupInput, type FlowResult, type LossTerm } from './airflow';
+import { flowNetwork, floorGapZeta, perforatedPlateZeta, solveNetwork, type NetworkInput, type ComponentSpec, type Endpoint, type FanGroupInput, type FlowResult, type LossTerm } from './airflow';
 import {
   axisOf,
   localToWorld,
@@ -406,6 +406,24 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     }
   }
 
+  // ---- the surface the case stands on: bottom vents breathe through the gap under it
+  const bottomWall: Dir = prefs.orientation === 'tower' ? 3 : 5;
+  const feet = vents.some((v) => v.wall === bottomWall && v.kind !== 'io') ? prefs.feetHeight : 0;
+  const footprintPerimeter = (() => {
+    const [xa, ya] = wallAxes(axisOf(bottomWall));
+    return 2 * (interior[xa] + interior[ya] + 4 * wall);
+  })();
+  const rectPerimeter = (r: Vent['rect']) => 2 * (r.x1 - r.x0 + r.y1 - r.y0);
+  /** Loss of the floor gap for a group's bottom vents, as a series term on its own area. */
+  const floorGap = (groupId: string, w?: Dir): LossTerm[] => {
+    if (w !== undefined && w !== bottomWall) return [];
+    const vb = vents.filter((v) => v.groupId === groupId && v.wall === bottomWall);
+    if (!vb.length) return [];
+    const area = vb.reduce((s2, v) => s2 + rectArea(v.rect), 0);
+    const perimeter = vb.reduce((s2, v) => s2 + rectPerimeter(v.rect), 0);
+    return [{ label: 'floor gap', zeta: floorGapZeta(area, perimeter, feet, footprintPerimeter), area: area * MM2 }];
+  };
+
   // ---- airflow groups
   const zVent = perforatedPlateZeta(vs.openRatio) + (prefs.dustFilters ? advanced.dustFilterLossK : 0);
   const ventAreaFor = (groupId: string, w?: Dir) =>
@@ -445,7 +463,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
         { label: 'fin stack', zeta: advanced.finStackLossK, area: cooler.width * cooler.depth * MM2 },
         { label: 'fan proximity', zeta: prox(atWall ? board.faceGap : 30, cooler.fan), area: fanArea(cooler.fan, 1) },
       ];
-      if (atWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor('cpu') });
+      if (atWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor('cpu') }, ...floorGap('cpu'));
       groups.push({ id: 'cpu', label: 'CPU cooler', heatW: cpuW, fan: cooler.fan, fanCount: 1, source: atWall ? 'outside' : 'case', sink: 'case', losses, isRadiator: false, component: cpuComp('mean', rth.cpuToAir) });
       groupParts.cpu = 'board';
       board.airflow = atWall ? 'in' : 'internal';
@@ -484,7 +502,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
         { label: 'shroud', zeta: 3, area: fanArea(gpuSpec.cardFanSpec, 1) },
         { label: 'fan proximity', zeta: prox(atWall ? gpu.faceGap : 30, gpuSpec.cardFanSpec), area: fanArea(gpuSpec.cardFanSpec, 1) },
       ];
-      if (atWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor('gpu') });
+      if (atWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor('gpu') }, ...floorGap('gpu'));
       groups.push({
         id: 'gpu-card',
         label: aioGpu ? 'GPU card (VRM/VRAM fan)' : 'GPU cooler',
@@ -512,10 +530,10 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       const faceAtWall = psuSpec.fanOn === 'face' && psu.faceAtWall && vents.some((v) => v.groupId === 'psu' && v.kind === 'fan');
       const losses: LossTerm[] = [{ label: 'PSU internals', zeta: advanced.psuLossK, area: fanArea(psuSpec.fan, 1) }];
       if (faceAtWall) {
-        losses.push({ label: 'intake vent', zeta: zVent, area: ventAreaFor('psu', psu.face) });
+        losses.push({ label: 'intake vent', zeta: zVent, area: ventAreaFor('psu', psu.face) }, ...floorGap('psu', psu.face));
         losses.push({ label: 'fan proximity', zeta: prox(psu.faceGap, psuSpec.fan), area: fanArea(psuSpec.fan, 1) });
       }
-      if (acAtWall) losses.push({ label: 'AC-end grille', zeta: perforatedPlateZeta(0.6), area: ventAreaFor('psu', acDir) });
+      if (acAtWall) losses.push({ label: 'AC-end grille', zeta: perforatedPlateZeta(0.6), area: ventAreaFor('psu', acDir) }, ...floorGap('psu', acDir));
       groups.push({
         id: 'psu',
         label: 'Power supply',
@@ -553,10 +571,10 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       { label: 'radiator core', zeta: advanced.radLossK * (rad.coreThickness / 27), area: coreArea },
       { label: 'fan proximity', zeta: prox(p.faceAtWall ? p.faceGap : 0, fan), area: fanArea(fan, p.fanCount!) },
     ];
-    if (p.faceAtWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor(p.id, p.face) });
+    if (p.faceAtWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor(p.id, p.face) }, ...floorGap(p.id, p.face));
     else losses.push({ label: 'blocked face', zeta: 40, area: coreArea });
     if (dir === 'through') {
-      losses.push({ label: 'far vent', zeta: perforatedPlateZeta(vs.openRatio), area: ventAreaFor(p.id, opposite(p.face!)) || coreArea });
+      losses.push({ label: 'far vent', zeta: perforatedPlateZeta(vs.openRatio), area: ventAreaFor(p.id, opposite(p.face!)) || coreArea }, ...floorGap(p.id, opposite(p.face!)));
     } else {
       const plen = cfg.advanced.radPlenumGap + profile.extraGap;
       const perim = 2 * (rad.length + rad.width);
@@ -588,6 +606,10 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   }
   if (combos.length === 0) combos.push([]);
   const passiveZeta = perforatedPlateZeta(vs.openRatio) + (prefs.dustFilters ? advanced.dustFilterLossK : 0);
+  /** Share of a passive vent's area that still counts with the floor gap in series (1 off the bottom). */
+  const passiveShare = (v: Vent) =>
+    v.wall === bottomWall ? Math.sqrt(passiveZeta / (passiveZeta + floorGapZeta(rectArea(v.rect), rectPerimeter(v.rect), feet, footprintPerimeter))) : 1;
+  const passiveFlowArea = vents.filter((v) => v.kind === 'passive').reduce((sum, v) => sum + rectArea(v.rect) * passiveShare(v), 0);
   // Vertical axis (solver): v in a tower, t on its side.
   const upAxis = prefs.orientation === 'tower' ? 1 : 2;
   // A printed shell is cut into pieces that fit the build volume; its glued joints leak a little.
@@ -623,7 +645,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
           id: c.id,
           label: c.label,
           heatW: Object.entries(net.heatByPart).reduce((sum, [part, w]) => sum + (zoneOfPart(part) === k ? w : 0), 0),
-          passiveArea: vents.filter((v) => v.kind === 'passive').reduce((sum, v) => sum + ventAreaIn(v, layoutDesign, c.box), 0) * MM2,
+          passiveArea: vents.filter((v) => v.kind === 'passive').reduce((sum, v) => sum + ventAreaIn(v, layoutDesign, c.box) * passiveShare(v), 0) * MM2,
           passiveZeta,
           leakArea: (CASE_LEAK + jointLeak) * wallShare(layoutDesign, c.box),
           components: net.caseComps.filter((cc) => zoneOfPart(net.compPart[cc.id] ?? 'board') === k),
@@ -639,7 +661,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     return flowNetwork({
       groups,
       internalHeatW: net.internalHeat,
-      passiveArea: passiveArea * MM2,
+      passiveArea: passiveFlowArea * MM2,
       passiveZeta,
       ambientC: prefs.ambientC,
       targetRiseC: prefs.targetRiseC,
@@ -754,6 +776,9 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       checks.push({ level: 'ok', text: `Riser path ≈ ${Math.round(path)} mm fits the ${prefs.riserLength} mm riser.` });
     }
   }
+  const fannedBottom = vents.some((v) => v.wall === bottomWall && v.groupId && v.kind !== 'passive');
+  if (fannedBottom && feet < 25)
+    checks.push({ level: 'info', text: `Fans breathe through the bottom panel with ${feet} mm of clearance to the desk; about 30 mm (a quarter of a 120 mm fan) lets them breathe freely.` });
   if (!acAtWall) checks.push({ level: 'info', text: 'PSU AC inlet is inside the case — route it to the back with a short internal extension cable (common in small cases).' });
   if (bs.coolerOverhangsRear) checks.push({ level: 'warn', text: 'CPU cooler overhangs the rear edge of the board.' });
   for (const p of radParts) {
@@ -764,8 +789,6 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
 
   // ---- exterior, world mapping
   const exterior: Vec3 = [interior[0] + 2 * wall, interior[1] + 2 * wall, interior[2] + 2 * wall];
-  const bottomWall: Dir = prefs.orientation === 'tower' ? 3 : 5;
-  const feet = vents.some((v) => v.wall === bottomWall && v.kind !== 'io') ? prefs.feetHeight : 0;
   const world =
     prefs.orientation === 'tower'
       ? { width: exterior[2], height: exterior[1] + feet, depth: exterior[0] }

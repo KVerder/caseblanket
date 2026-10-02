@@ -115,6 +115,10 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
           ]}
           onChange={(v) => set('orientation', v)}
         />
+        <Slider id="feet-h" label="Feet (bottom vents)" value={p.feetHeight} min={4} max={40} step={1} format={(v) => `${v} mm`} onChange={(v) => set('feetHeight', v)} />
+        <p className="muted small">
+          The case stands on a desk: vents in the bottom panel breathe through the gap under it. A fan needs about a quarter of its size (30 mm for 120 mm) to breathe freely; shorter feet cost cooling.
+        </p>
         <Grid>
           <Select
             id="material"

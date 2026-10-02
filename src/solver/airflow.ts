@@ -176,6 +176,20 @@ export function perforatedPlateZeta(openRatio: number): number {
   return (0.707 * Math.pow(1 - f, 0.375) + 1 - f) ** 2 / (f * f);
 }
 
+/** Turn into or out of the gap under a case standing on its feet, on the gap's side area (estimate). */
+export const FLOOR_GAP_ZETA = 1;
+
+/**
+ * The desk or floor under bottom vents: air reaches them only through the gap between the case
+ * and the surface, whose side area is the vents' perimeter (at most the footprint's) times the
+ * feet height. Returns that loss as ζ on the vents' own gross area. The usual fan-clearance rule
+ * (a quarter of the fan size) is where the gap's side area equals the fan's area.
+ */
+export function floorGapZeta(ventAreaMm2: number, ventPerimeterMm: number, feetMm: number, footprintPerimeterMm: number): number {
+  const gap = Math.min(ventPerimeterMm, footprintPerimeterMm) * Math.max(feetMm, 0.5);
+  return FLOOR_GAP_ZETA * (ventAreaMm2 / gap) ** 2;
+}
+
 export function fanCurve(fan: FanSpec, count: number, speed = 1) {
   return {
     qmax: (fan.maxAirflowM3h / 3600) * count * speed,

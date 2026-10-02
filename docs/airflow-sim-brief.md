@@ -15,7 +15,7 @@ Add a 3D airflow and heat simulation that runs in the browser for the selected d
 4. **Fan swirl:** axial fans leave a rotating jet. The simulation includes it, which is where visible vortices come from.
 
 **Simulation.**
-- Incompressible flow on a staggered (MAC) grid covering the case plus about 60 mm of room air around it, with an open far boundary at room temperature.
+- Incompressible flow on a staggered (MAC) grid covering the case plus about 60 mm of room air around and above it, with an open far boundary at room temperature. Below, the case stands on a solid, adiabatic desk at the bottom of its feet: there is no room air under the floor. The gap under the case is at least one cell tall; when the feet are shorter, the extra contraction ζ·((cell / feet)² − 1) is added as drag on the footprint's edge cells.
 - Fans act as actuator disks. Each is driven to the airflow the fan-curve model already computes and given a swirl component.
 - Radiators, fin stacks, the PSU and the GPU shroud are porous blocks that let air through along one axis only. Perforated panels are porous by their open area.
 - Temperature is carried with the air. Heat goes in where each part releases it, and warm air rises (buoyancy, along real "up" for the chosen orientation).

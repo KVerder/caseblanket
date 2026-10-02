@@ -1,7 +1,7 @@
 import { VENT_STYLES } from '../model/presets';
 import type { DesignConfig } from '../model/types';
 import { buildScene, type SceneGeometry } from '../cfd/scene';
-import { MMH2O_TO_PA, perforatedPlateZeta } from '../solver/airflow';
+import { floorGapZeta, MMH2O_TO_PA, perforatedPlateZeta } from '../solver/airflow';
 import type { Design } from '../solver/evaluate';
 import { axisOf, signOf, wallAxes, type Box, type Vec3 } from '../solver/geometry';
 import { meshShell, shellField, ventMask, type ShellMesh } from '../solver/shrinkwrap';
@@ -12,7 +12,8 @@ import { meshShell, shellField, ventMask, type ShellMesh } from '../solver/shrin
  *
  *   domain          the air inside the case: the shell's inner surface is the boundary, a wall
  *                   where the panel is solid and open to still room air where it is vented
- *   vents           a porous layer just inside each vent (Idelchik's perforated-plate ζ)
+ *   vents           a porous layer just inside each vent (Idelchik's perforated-plate ζ, plus
+ *                   the floor-gap loss for vents in the bottom panel: the desk is not meshed)
  *   parts           solid obstacles (boards, card body, end tanks) cut out of the mesh
  *   radiators, fins, PSU   porous cellZones (Darcy-Forchheimer, ζ/L along the flow axis, blocked across)
  *   fans            cyclic baffles with a fan pressure jump from the fan curve (Pmax at 0, 0 at free-air speed)
@@ -265,7 +266,11 @@ export function openfoamCase(design: Design, cfg: DesignConfig, shell?: ShellMes
       b.max[xa] = v.rect.x1;
       b.min[ya] = v.rect.y0;
       b.max[ya] = v.rect.y1;
-      return { name: `vent${i}_${v.kind.replace(/[^a-z]/g, '')}`, wb: worldBox(cfg, b), axis: worldAxis(cfg, a) };
+      // The domain stops at the shell, so the desk under bottom vents is the floor-gap loss in the layer.
+      const w = v.rect.x1 - v.rect.x0;
+      const l = v.rect.y1 - v.rect.y0;
+      const floor = v.wall === design.bottomWall ? floorGapZeta(w * l, 2 * (w + l), design.feet, 2 * (design.interior[xa] + design.interior[ya] + 4 * design.wall)) : 0;
+      return { name: `vent${i}_${v.kind.replace(/[^a-z]/g, '')}`, wb: worldBox(cfg, b), axis: worldAxis(cfg, a), floor };
     });
 
   // ---------------------------------------------------------------- system
@@ -790,7 +795,7 @@ mixture
       [
         ...ventZones.map((v) => {
           // Perforated panel: Δp = ζ·½ρU² over the layer, along the vent's normal only.
-          const f = [0, 1, 2].map((a) => (a === v.axis ? ventZeta / (VENT_LAYER * M) : 0));
+          const f = [0, 1, 2].map((a) => (a === v.axis ? (ventZeta + v.floor) / (VENT_LAYER * M) : 0));
           return `${v.name}
 {
     type            explicitPorositySource;
