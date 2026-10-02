@@ -1,3 +1,4 @@
+import { holeHalfExtents, perforation } from '../model/perforation';
 import type { DesignConfig, PanelName } from '../model/types';
 import type { Design } from '../solver/evaluate';
 import { axisOf, signOf, wallAxes, type Dir, type Rect } from '../solver/geometry';
@@ -8,30 +9,36 @@ export function panelName(d: Dir, orientation: DesignConfig['prefs']['orientatio
   return (orientation === 'tower' ? tower : consoleNames)[d];
 }
 
-function holes(r: Rect, style: string, ox: number, oy: number, budget: { n: number }): string {
+/**
+ * The perforation of one vent as drawn: whole holes of the style's pattern inside the vent with a
+ * 1.5 mm border, at the same lattice as the printed pieces (wall coordinates). `toDrawing` maps
+ * wall coordinates to the drawing (it may mirror x and flips y).
+ */
+function holes(r: Rect, style: string, place: (x: number, y: number) => [number, number], budget: { n: number }): string {
+  const p = perforation(style);
+  const [hx, hy] = holeHalfExtents(p);
   const out: string[] = [];
-  const pitch = style === 'fine' ? 3 : style === 'slots' ? 4 : 6;
-  const rad = style === 'fine' ? 1.1 : 2.4;
-  if (style === 'slots') {
-    for (let y = r.y0 + 3; y <= r.y1 - 3 && budget.n > 0; y += pitch) {
-      out.push(`<rect x="${(ox + r.x0 + 2).toFixed(2)}" y="${(oy + y - 0.9).toFixed(2)}" width="${Math.max(0, r.x1 - r.x0 - 4).toFixed(2)}" height="1.8" rx="0.9"/>`);
-      budget.n--;
-    }
-    return out.join('');
-  }
-  let row = 0;
-  for (let y = r.y0 + rad + 1; y <= r.y1 - rad - 1; y += pitch * 0.866, row++) {
-    for (let x = r.x0 + rad + 1 + (row % 2 ? pitch / 2 : 0); x <= r.x1 - rad - 1; x += pitch) {
+  const row0 = Math.ceil((r.y0 + 1.5 + hy) / p.rowPitch);
+  const row1 = Math.floor((r.y1 - 1.5 - hy) / p.rowPitch);
+  for (let row = row0; row <= row1; row++) {
+    const off = row & 1 ? p.pitch / 2 : 0;
+    const cy = row * p.rowPitch;
+    for (let col = Math.ceil((r.x0 + 1.5 + hx - off) / p.pitch); ; col++) {
+      const cx = col * p.pitch + off;
+      if (cx + hx > r.x1 - 1.5) break;
       if (budget.n-- <= 0) return out.join('');
-      if (style === 'hex') {
+      const [X, Y] = place(cx, cy);
+      if (p.kind === 'round') out.push(`<circle cx="${X.toFixed(2)}" cy="${Y.toFixed(2)}" r="${(p.size / 2).toFixed(2)}"/>`);
+      else if (p.kind === 'slots') out.push(`<rect x="${(X - hx).toFixed(2)}" y="${(Y - hy).toFixed(2)}" width="${(2 * hx).toFixed(2)}" height="${(2 * hy).toFixed(2)}" rx="${hy.toFixed(2)}"/>`);
+      else {
+        // Flats facing along the row (vertical edges at ±size/2): vertices at 30° + k·60°.
+        const R = p.size / 2 / 0.8660254;
         const pts: string[] = [];
         for (let k = 0; k < 6; k++) {
           const a = (Math.PI / 3) * k + Math.PI / 6;
-          pts.push(`${(ox + x + (rad + 0.2) * Math.cos(a)).toFixed(2)},${(oy + y + (rad + 0.2) * Math.sin(a)).toFixed(2)}`);
+          pts.push(`${(X + R * Math.cos(a)).toFixed(2)},${(Y + R * Math.sin(a)).toFixed(2)}`);
         }
         out.push(`<polygon points="${pts.join(' ')}"/>`);
-      } else {
-        out.push(`<circle cx="${(ox + x).toFixed(2)}" cy="${(oy + y).toFixed(2)}" r="${rad}"/>`);
       }
     }
   }
@@ -82,7 +89,7 @@ export function panelsSVG(design: Design, cfg: DesignConfig): string {
       .join('');
     const perf = vents
       .filter((v) => v.kind !== 'io' && v.kind !== 'bracket')
-      .map((v) => holes(toDrawing(v.rect), style, x, rowY, budget))
+      .map((v) => holes(v.rect, style, (cx, cy) => [x + (mirror ? pw - (w + cx) : w + cx), rowY + ph - (w + cy)], budget))
       .join('');
     const name = panelName(d, cfg.prefs.orientation);
     blocks.push(

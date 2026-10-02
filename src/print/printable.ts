@@ -5,6 +5,7 @@ import { meshGrid, shellField, type Grid, type ShellMesh } from '../solver/shrin
 import { PARTITION_THICKNESS } from '../solver/chambers';
 import { plateMesh } from '../solver/partitions';
 import { DEFAULT_SLICER, OVERHANG_DEG, type Manifest, type SlicerSettings } from './analysis';
+import { holeAt, holeHalfExtents, openShare, perforation } from '../model/perforation';
 import { bossMesh, fanHoleSpacing, mergeMeshes, mountPlan, psuHoles, type MountPlan, type Standoff } from './mounts';
 
 /**
@@ -16,8 +17,6 @@ import { bossMesh, fanHoleSpacing, mergeMeshes, mountPlan, psuHoles, type MountP
 export interface PrintOptions {
   /** Printer build volume, mm. Pieces are cut so each fits in its smallest dimension cube. */
   bed: [number, number, number];
-  holeDiameter: number;
-  holePitch: number;
   /** Preferred filament (material id); hotter pieces are moved to a higher-temperature one. */
   filament?: string;
   slicer?: SlicerSettings;
@@ -25,36 +24,153 @@ export interface PrintOptions {
   liner?: boolean;
 }
 
-export const DEFAULT_PRINT: PrintOptions = { bed: [250, 250, 250], holeDiameter: 5, holePitch: 7, filament: 'petg', slicer: DEFAULT_SLICER, liner: false };
+export const DEFAULT_PRINT: PrintOptions = { bed: [250, 250, 250], filament: 'petg', slicer: DEFAULT_SLICER, liner: false };
 
 export interface PrintPiece {
   name: string;
   box: Box;
   mesh: ShellMesh;
+  /** Loose fragments removed from this piece (bits that would print floating). */
+  dropped?: number;
+}
+
+/**
+ * Remove disconnected bits that would print floating: connected components (by shared vertices)
+ * whose volume is under `minMm3` and under 0.5 % of the piece's largest component.
+ */
+export function dropFragments(m: ShellMesh, minMm3 = 400): { mesh: ShellMesh; dropped: number } {
+  const n = m.positions.length / 3;
+  if (!n) return { mesh: m, dropped: 0 };
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (x: number): number => {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  };
+  const union = (a: number, b: number) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[rb] = ra;
+  };
+  for (let t = 0; t < m.indices.length; t += 3) {
+    union(m.indices[t], m.indices[t + 1]);
+    union(m.indices[t], m.indices[t + 2]);
+  }
+  const vol = new Map<number, number>();
+  const P = m.positions;
+  for (let t = 0; t < m.indices.length; t += 3) {
+    const a = 3 * m.indices[t];
+    const b = 3 * m.indices[t + 1];
+    const c = 3 * m.indices[t + 2];
+    const v =
+      (P[a] * (P[b + 1] * P[c + 2] - P[b + 2] * P[c + 1]) - P[a + 1] * (P[b] * P[c + 2] - P[b + 2] * P[c]) + P[a + 2] * (P[b] * P[c + 1] - P[b + 1] * P[c])) / 6;
+    const k = find(m.indices[t]);
+    vol.set(k, (vol.get(k) ?? 0) + v);
+  }
+  const largest = Math.max(...[...vol.values()].map(Math.abs));
+  // A component is dropped only if it is small in both senses.
+  const keepRoot = new Set([...vol].filter(([, v]) => Math.abs(v) >= minMm3 || Math.abs(v) >= 0.005 * largest).map(([k]) => k));
+  const dropped = vol.size - keepRoot.size;
+  if (!dropped) return { mesh: m, dropped: 0 };
+  const remap = new Int32Array(n).fill(-1);
+  const pos: number[] = [];
+  const nrm: number[] = [];
+  const idx: number[] = [];
+  for (let t = 0; t < m.indices.length; t += 3) {
+    if (!keepRoot.has(find(m.indices[t]))) continue;
+    for (let k = 0; k < 3; k++) {
+      const i = m.indices[t + k];
+      if (remap[i] < 0) {
+        remap[i] = pos.length / 3;
+        pos.push(P[3 * i], P[3 * i + 1], P[3 * i + 2]);
+        nrm.push(m.normals[3 * i] ?? 0, m.normals[3 * i + 1] ?? 0, m.normals[3 * i + 2] ?? 0);
+      }
+      idx.push(remap[i]);
+    }
+  }
+  const keptVol = [...vol].filter(([k]) => keepRoot.has(k)).reduce((s2, [, v]) => s2 + Math.abs(v), 0);
+  return { mesh: { positions: new Float32Array(pos), normals: new Float32Array(nrm), indices: new Uint32Array(idx), bbox: m.bbox, volumeMm3: keptVol, areaMm2: m.areaMm2 }, dropped };
 }
 
 /** Signed distance (negative inside) of the printable wall material, in solver coordinates. */
-export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, plan?: MountPlan) {
+export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, plan?: MountPlan, joints: { axis: number; at: number }[] = []) {
+  void opt;
   const F = shellField(design, cfg, cfg.prefs.organic ?? 0);
   const wall = design.wall;
-  const r = opt.holeDiameter / 2;
-  const P = opt.holePitch;
-  const rowH = P * 0.866;
+  // The vent style's own pattern (the same one the 3D view draws).
+  const pat = perforation(cfg.prefs.ventStyleId);
+  const [hx, hy] = holeHalfExtents(pat);
+  const hr = Math.max(hx, hy);
+  /**
+   * Where a wall facing `s` along axis `a` is, over a rectangle of its plane: found from outside the
+   * case inward, so a vent only ever cuts the outer wall it belongs to (on a shrinkwrapped shell a
+   * side vent's holes would otherwise slice through any wall on its half of the case). Also says
+   * where that wall faces the vent within 30°: holes cut at a slant through a curved wall leave
+   * knife-edge webs and loose bits, so they go only where the wall is flat enough.
+   */
+  const wallMap = (a: number, s: number, R: { x0: number; y0: number; x1: number; y1: number }) => {
+    const [xa, ya] = wallAxes(a as 0 | 1 | 2);
+    const STEP = 2;
+    const x0 = R.x0 - 2 * STEP;
+    const y0 = R.y0 - 2 * STEP;
+    const nx = Math.max(1, Math.ceil((R.x1 - R.x0) / STEP) + 5);
+    const ny = Math.max(1, Math.ceil((R.y1 - R.y0) / STEP) + 5);
+    const t = new Float32Array(nx * ny);
+    const p: Vec3 = [0, 0, 0];
+    const outside = s > 0 ? design.interior[a] + 40 : -40;
+    for (let j = 0; j < ny; j++)
+      for (let i = 0; i < nx; i++) {
+        p[xa] = x0 + i * STEP;
+        p[ya] = y0 + j * STEP;
+        let pos = NaN;
+        for (let u = outside; s > 0 ? u > design.interior[a] / 2 : u < design.interior[a] / 2; u -= s * 0.5) {
+          p[a] = u;
+          if (F(p) <= -wall / 2) {
+            pos = u;
+            break;
+          }
+        }
+        t[i + nx * j] = pos;
+      }
+    const at = (i: number, j: number) => t[Math.max(0, Math.min(nx - 1, i)) + nx * Math.max(0, Math.min(ny - 1, j))];
+    return {
+      /** The wall's mid-plane position along the axis at (x, y), NaN where there is none. */
+      pos: (x: number, y: number) => at(Math.round((x - x0) / STEP), Math.round((y - y0) / STEP)),
+      flat: (x: number, y: number) => {
+        const i = Math.round((x - x0) / STEP);
+        const j = Math.round((y - y0) / STEP);
+        if (!Number.isFinite(at(i, j))) return false;
+        const gx = (at(i + 1, j) - at(i - 1, j)) / (2 * STEP);
+        const gy = (at(i, j + 1) - at(i, j - 1)) / (2 * STEP);
+        return Number.isFinite(gx) && Number.isFinite(gy) && Math.hypot(gx, gy) <= 0.58;
+      },
+    };
+  };
+  type WallMap = ReturnType<typeof wallMap>;
   const cuts = design.vents.map((v) => {
     const a = axisOf(v.wall);
     const [xa, ya] = wallAxes(a);
-    return { a, xa, ya, s: signOf(v.wall), rect: v.rect, solidCut: v.kind === 'io' || v.kind === 'bracket' };
+    return { a, xa, ya, s: signOf(v.wall), rect: v.rect, solidCut: v.kind === 'io' || v.kind === 'bracket', map: null as null | WallMap };
   });
+  /** On the vent's own wall: within the wall band where the map puts that wall. */
+  const onWall = (m: WallMap, p: Vec3, a: number, x: number, y: number) => {
+    const t = m.pos(x, y);
+    return Number.isFinite(t) && Math.abs(p[a] - t) <= wall / 2 + 1;
+  };
+  const JOINT_CLEAR = 3;
   // Mounting: openings cut through, screw holes through, and solid land around each screw.
   for (const o of plan?.openings ?? []) {
     const a = axisOf(o.wall);
     const [xa, ya] = wallAxes(a);
-    cuts.push({ a, xa, ya, s: signOf(o.wall), rect: o.rect, solidCut: true });
+    cuts.push({ a, xa, ya, s: signOf(o.wall), rect: o.rect, solidCut: true, map: null });
   }
   const screws = (plan?.holes ?? []).map((h) => {
     const a = axisOf(h.wall);
     const [xa, ya] = wallAxes(a);
-    return { a, xa, ya, s: signOf(h.wall), x: h.x, y: h.y, r: h.d / 2 };
+    return { a, xa, ya, s: signOf(h.wall), x: h.x, y: h.y, r: h.d / 2, map: null as null | WallMap };
   });
   const LAND = 3.5;
   const keep = [
@@ -65,16 +181,6 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
     const [xa, ya] = wallAxes(b.axis);
     return { ...b, xa, ya };
   });
-  const holeDist = (x: number, y: number) => {
-    const ri = Math.round(y / rowH);
-    let best = Infinity;
-    for (let row = ri - 1; row <= ri + 1; row++) {
-      const off = row & 1 ? P / 2 : 0;
-      const ci = Math.round((x - off) / P);
-      for (let col = ci - 1; col <= ci + 1; col++) best = Math.min(best, Math.hypot(x - (col * P + off), y - row * rowH));
-    }
-    return best - r;
-  };
   return (p: Vec3) => {
     const f = F(p);
     // Band between the outer surface and one wall in.
@@ -93,25 +199,34 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
     }
     if (d > 3) return Math.min(d, plate);
     for (const c of cuts) {
-      // Only cut the wall on the vent's own side of the case.
-      const mid = design.interior[c.a] / 2;
-      if (c.s > 0 ? p[c.a] < mid : p[c.a] > mid) continue;
       const x = p[c.xa];
       const y = p[c.ya];
       const R = c.rect;
+      if (x < R.x0 - 1 || x > R.x1 + 1 || y < R.y0 - 1 || y > R.y1 + 1) continue;
+      // Only the vent's own outer wall.
+      c.map ??= wallMap(c.a, c.s, R);
+      if (!onWall(c.map, p, c.a, x, y)) continue;
       if (c.solidCut) {
         const inside = Math.max(R.x0 - x, x - R.x1, R.y0 - y, y - R.y1);
         d = Math.max(d, -inside);
       } else {
-        if (x < R.x0 + r + 1 || x > R.x1 - r - 1 || y < R.y0 + r + 1 || y > R.y1 - r - 1) continue;
-        if (keep.some((h) => h.a === c.a && h.s === c.s && Math.hypot(x - h.x, y - h.y) < h.r + r)) continue;
-        d = Math.max(d, -holeDist(x, y));
+        const h = holeAt(pat, x, y);
+        if (h.d >= 0) continue;
+        // Whole holes only: inside the vent with a border, clear of screws and joints, on flat wall.
+        if (h.cx - hx < R.x0 + 1.5 || h.cx + hx > R.x1 - 1.5 || h.cy - hy < R.y0 + 1.5 || h.cy + hy > R.y1 - 1.5) continue;
+        if (keep.some((k) => k.a === c.a && k.s === c.s && Math.hypot(h.cx - k.x, h.cy - k.y) < k.r + hr)) continue;
+        if (joints.some((j) => (j.axis === c.xa && Math.abs(j.at - h.cx) < hx + JOINT_CLEAR) || (j.axis === c.ya && Math.abs(j.at - h.cy) < hy + JOINT_CLEAR))) continue;
+        if (![[0, 0], [-hx, -hy], [hx, -hy], [-hx, hy], [hx, hy]].every(([dx, dy]) => c.map!.flat(h.cx + dx, h.cy + dy))) continue;
+        d = Math.max(d, -h.d);
       }
     }
     for (const h of screws) {
-      const mid = design.interior[h.a] / 2;
-      if (h.s > 0 ? p[h.a] < mid : p[h.a] > mid) continue;
-      d = Math.max(d, h.r - Math.hypot(p[h.xa] - h.x, p[h.ya] - h.y));
+      const x = p[h.xa];
+      const y = p[h.ya];
+      if (Math.abs(x - h.x) > h.r + 1 || Math.abs(y - h.y) > h.r + 1) continue;
+      h.map ??= wallMap(h.a, h.s, { x0: h.x - h.r - 2, y0: h.y - h.r - 2, x1: h.x + h.r + 2, y1: h.y + h.r + 2 });
+      if (!onWall(h.map, p, h.a, h.x, h.y)) continue;
+      d = Math.max(d, h.r - Math.hypot(x - h.x, y - h.y));
     }
     return Math.min(d, plate);
   };
@@ -173,8 +288,15 @@ export function meshPiece(solid: (p: Vec3) => number, box: Box, cell: number): S
 }
 
 export function printPieces(design: Design, cfg: DesignConfig, opt: PrintOptions, progress?: (done: number, total: number) => void, plan = mountPlan(design, cfg)): PrintPiece[] {
-  const solid = wallSolid(design, cfg, opt, plan);
   const boxes = planPieces(design, opt);
+  // Joints between pieces: the box faces shared by two pieces.
+  const joints: { axis: number; at: number }[] = [];
+  for (let a = 0; a < 3; a++) {
+    const lo = Math.min(...boxes.map((b) => b.min[a]));
+    for (const at of new Set(boxes.map((b) => b.min[a]))) if (at > lo + 1e-6) joints.push({ axis: a, at });
+  }
+  const solid = wallSolid(design, cfg, opt, plan, joints);
+  const web = perforation(cfg.prefs.ventStyleId).web;
   const out: PrintPiece[] = [];
   // Each standoff goes with the piece that holds all of it; one cut by a joint is printed on its own.
   const inside = (s: Standoff, b: Box) => {
@@ -185,11 +307,14 @@ export function printPieces(design: Design, cfg: DesignConfig, opt: PrintOptions
   boxes.forEach((box, idx) => {
     progress?.(idx, boxes.length);
     const ext = Math.max(...[0, 1, 2].map((a) => box.max[a] - box.min[a]));
-    const cell = Math.min(1.8, Math.max(1, ext / 160, opt.holeDiameter / 4));
-    let mesh = meshPiece(solid, box, cell);
+    // Fine enough that every web between holes spans two cells (thinner ones pinch off into loose bits).
+    const cell = Math.min(1.8, web / 2, Math.max(1, ext / 160));
+    const raw = meshPiece(solid, box, cell);
+    const { mesh: kept, dropped } = dropFragments(raw);
+    let mesh = kept;
     const bosses = plan.standoffs.filter((s) => !loose.includes(s) && inside(s, box) && boxes.find((b) => inside(s, b)) === box);
     if (mesh.indices.length && bosses.length) mesh = mergeMeshes([mesh, ...bosses.map((s) => bossMesh(s))]);
-    if (mesh.indices.length) out.push({ name: `piece-${String(out.length + 1).padStart(2, '0')}`, box, mesh });
+    if (mesh.indices.length) out.push({ name: `piece-${String(out.length + 1).padStart(2, '0')}`, box, mesh, dropped });
   });
   loose.forEach((s, i) => out.push({ name: `standoff-${i + 1}`, box: bossMesh(s).bbox, mesh: bossMesh(s) }));
   // Partition plates, trimmed to the shell, cut into strips that fit the bed.
@@ -437,7 +562,10 @@ export function zip(files: { name: string; data: Uint8Array }[]): Uint8Array {
   return out;
 }
 
-export function printReadme(design: Design, opt: PrintOptions, pieces: PrintPiece[], manifest?: Manifest, plan?: MountPlan, fits: PrintPiece[] = []): string {
+export function printReadme(design: Design, opt: PrintOptions, pieces: PrintPiece[], manifest?: Manifest, plan?: MountPlan, fits: PrintPiece[] = [], ventStyleId = 'round'): string {
+  const pat = perforation(ventStyleId);
+  const patText = pat.kind === 'slots' ? `${pat.size} × ${pat.length} mm slots, rows ${pat.rowPitch} mm apart` : pat.kind === 'hex' ? `hexagonal holes ${pat.size} mm across flats on a ${pat.pitch} mm pitch` : `Ø${pat.size} mm holes on a ${pat.pitch} mm pitch`;
+  const dropped = pieces.reduce((s2, p) => s2 + (p.dropped ?? 0), 0);
   const s = opt.slicer ?? DEFAULT_SLICER;
   const lines = [
     'caseblanket — 3D-printable shell',
@@ -457,7 +585,8 @@ export function printReadme(design: Design, opt: PrintOptions, pieces: PrintPiec
       : []),
     ...(plan ? buildGuide(plan, fits) : []),
     `Wall ${design.wall} mm (set the material and wall thickness in Tune → Shape & finish; 2.4 mm or more suits FDM printing).`,
-    `Vents: ${opt.holeDiameter} mm holes on a ${opt.holePitch} mm hex pitch. I/O and GPU bracket openings are cut through.`,
+    `Vents: ${patText} (${Math.round(openShare(pat) * 100)} % open, webs at least ${pat.web} mm), whole holes only, where the wall faces its vent, with a solid border at every joint. I/O and GPU bracket openings are cut through.`,
+    ...(dropped ? [`${dropped} loose fragment${dropped > 1 ? 's' : ''} (bits that would print floating) were removed from the pieces.`] : []),
     `Pieces are cut on straight planes to fit a ${opt.bed.join(' × ')} mm bed; glue or bridge them along the cut faces.`,
     'Units: millimetres. Orientation: as the case stands (Y up).',
     '',

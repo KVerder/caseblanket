@@ -255,6 +255,15 @@ for (const [name, vp, opts] of [
     const db25 = Number((await page.locator('.noise .noise-big b').innerText()).trim());
     const over = /Over the 25 dB\(A\) budget/.test(await page.locator('.noise').innerText());
     check(db25 <= 25.05 || over, `${name}: a 25 dB(A) budget gives ${db25} dB(A)${over ? ' (reported as over budget)' : ''}`);
+    // Every perforation style draws in the 3D view (each compiles its own shader; errors fail 'no console errors').
+    for (const style of ['slots', 'fine', 'round', 'hex']) {
+      await page.locator('#vent-style').selectOption(style);
+      await page.waitForTimeout(1200);
+      await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+    }
+    await page.waitForTimeout(1500);
+    const compiled = await page.evaluate(() => window.__caseblanketViewer.ventStyle);
+    check(compiled === 'hex', `${name}: the 3D view follows the perforation style through all four (now ${compiled}; shader errors would fail 'no console errors')`);
   }
   await ex.screenshot({ path: `${out}/${name}.png` });
   await ctx.close();

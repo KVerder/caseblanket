@@ -25,7 +25,8 @@ import {
   PartBuilder,
   partCenter,
 } from './parts';
-import { shadowTexture, VENT_TILE_MM, ventTexture } from './textures';
+import { shadowTexture } from './textures';
+import { holeGlsl, perforation } from '../model/perforation';
 
 export interface ViewOptions {
   shellOpacity: number;
@@ -117,6 +118,8 @@ export class CaseViewer {
   doubleTapWindow = 350;
   private anim: { from: THREE.Vector3; to: THREE.Vector3; fromT: THREE.Vector3; toT: THREE.Vector3; t0: number } | null = null;
   private design: Design | null = null;
+  /** Perforation style compiled into the shell shader. */
+  private ventStyle = 'hex';
   readonly flow = new FlowLayer();
   private lastFrameTime = 0;
   private map: WorldMap | null = null;
@@ -170,34 +173,33 @@ export class CaseViewer {
 
     // Perforations for shrinkwrapped shells: a per-vertex vent mask (1 = mesh, 2 = solid cut-out)
     // drawn as a triplanar hole pattern in world millimetres.
+    // Perforation in the chosen style, drawn in solver coordinates on the wall plane the surface
+    // faces: the same pattern, lattice and orientation the printed pieces are cut with.
     this.shellMaterial.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute float vent;\nvarying float vVent;\nvarying vec3 vWP;\nvarying vec3 vWN;')
-        .replace(
-          '#include <begin_vertex>',
-          '#include <begin_vertex>\nvVent = vent;\nvWP = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvWN = normalize(mat3(modelMatrix) * normal);',
-        );
+        .replace('#include <common>', '#include <common>\nattribute float vent;\nattribute vec3 spos;\nattribute vec3 snrm;\nvarying float vVent;\nvarying vec3 vSP;\nvarying vec3 vSN;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvVent = vent;\nvSP = spos;\nvSN = snrm;');
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying float vVent;\nvarying vec3 vWP;\nvarying vec3 vWN;')
+        .replace('#include <common>', `#include <common>\nvarying float vVent;\nvarying vec3 vSP;\nvarying vec3 vSN;\n${holeGlsl(perforation(this.ventStyle))}`)
         .replace(
           '#include <color_fragment>',
           `#include <color_fragment>
           if (vVent > 0.5) {
-            vec3 an = abs(vWN);
-            vec2 uv = (an.x > an.y && an.x > an.z) ? vWP.yz : ((an.y > an.z) ? vWP.xz : vWP.xy);
             float hole = 1.0;
             if (vVent < 1.5) {
-              vec2 q = uv / 6.0;
-              q.x += mod(floor(q.y), 2.0) * 0.5;
-              vec2 f = fract(q) - 0.5;
-              hole = 1.0 - smoothstep(0.34, 0.42, length(f));
+              vec3 an = abs(vSN);
+              vec2 uv = (an.x > an.y && an.x > an.z) ? vSP.yz : ((an.y > an.z) ? vSP.xz : vSP.xy);
+              vec2 cen;
+              float dd = cbHole(uv, cen);
+              float aa = max(fwidth(dd), 0.05);
+              hole = 1.0 - smoothstep(-aa, aa, dd);
             }
             diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.02), hole * 0.93);
             diffuseColor.a = mix(diffuseColor.a, 1.0, hole * 0.6);
           }`,
         );
     };
-    this.shellMaterial.customProgramCacheKey = () => 'caseblanket-shell-v1';
+    this.shellMaterial.customProgramCacheKey = () => `caseblanket-shell-${this.ventStyle}`;
 
     this.ground = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
@@ -389,7 +391,11 @@ export class CaseViewer {
 
     // ---- vents
     const ventStyle = cfg.prefs.ventStyleId;
-    const tex = ventTexture(ventStyle);
+    if (ventStyle !== this.ventStyle) {
+      this.ventStyle = ventStyle;
+      this.shellMaterial.needsUpdate = true;
+    }
+    const holeCode = holeGlsl(perforation(ventStyle));
     for (const v of design.vents) {
       const a = axisOf(v.wall);
       const [xa, ya] = wallAxes(a);
@@ -411,27 +417,64 @@ export class CaseViewer {
         by = ux;
         [w, h] = [h, w];
       }
-      const plane = new THREE.PlaneGeometry(w, h);
+      let plane: THREE.BufferGeometry = new THREE.PlaneGeometry(w, h);
+      let world = false;
       let material: THREE.Material;
       if (v.kind === 'io' || v.kind === 'bracket') {
         material = new THREE.MeshBasicMaterial({ color: '#0c0d10', transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide });
       } else {
-        const t = tex.clone();
-        t.needsUpdate = true;
-        t.repeat.set(w / VENT_TILE_MM, h / VENT_TILE_MM);
-        material = new THREE.MeshBasicMaterial({
-          color: v.kind === 'passive' ? '#15171b' : '#07080a',
-          alphaMap: t,
+        // The vent as a quad in world space carrying its wall coordinates: whole holes of the
+        // chosen pattern, inside the vent with the print's 1.5 mm border.
+        const corners: [number, number][] = [
+          [v.rect.x0, v.rect.y0],
+          [v.rect.x1, v.rect.y0],
+          [v.rect.x1, v.rect.y1],
+          [v.rect.x0, v.rect.y1],
+        ];
+        const posArr: number[] = [];
+        const uvArr: number[] = [];
+        for (const [x, y] of corners) {
+          const q: Vec3 = [0, 0, 0];
+          q[a] = pos;
+          q[xa] = x;
+          q[ya] = y;
+          const wp = map.point(q);
+          posArr.push(wp.x, wp.y, wp.z);
+          uvArr.push(x, y);
+        }
+        plane = new THREE.BufferGeometry();
+        plane.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
+        plane.setAttribute('wuv', new THREE.Float32BufferAttribute(uvArr, 2));
+        plane.setIndex([0, 1, 2, 0, 2, 3]);
+        world = true;
+        material = new THREE.ShaderMaterial({
+          uniforms: {
+            rect: { value: new THREE.Vector4(v.rect.x0, v.rect.y0, v.rect.x1, v.rect.y1) },
+            color: { value: new THREE.Color(v.kind === 'passive' ? '#15171b' : '#07080a') },
+            opacity: { value: v.kind === 'passive' ? 0.8 : 0.95 },
+          },
+          vertexShader: 'attribute vec2 wuv;\nvarying vec2 vUv;\nvoid main() { vUv = wuv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+          fragmentShader: `uniform vec4 rect;\nuniform vec3 color;\nuniform float opacity;\nvarying vec2 vUv;\n${holeCode}
+void main() {
+  vec2 c;
+  float d = cbHole(vUv, c);
+  bool whole = c.x - cbHalf.x >= rect.x + 1.5 && c.x + cbHalf.x <= rect.z - 1.5 && c.y - cbHalf.y >= rect.y + 1.5 && c.y + cbHalf.y <= rect.w - 1.5;
+  float aa = max(fwidth(d), 0.05);
+  float k = whole ? 1.0 - smoothstep(-aa, aa, d) : 0.0;
+  if (k < 0.01) discard;
+  gl_FragColor = vec4(color, opacity * k);
+}`,
           transparent: true,
-          opacity: v.kind === 'passive' ? 0.75 : 0.95,
           depthWrite: false,
           side: THREE.DoubleSide,
         });
       }
       const mesh = new THREE.Mesh(plane, material);
       mesh.matrixAutoUpdate = false;
-      mesh.matrix.makeBasis(bx, by, new THREE.Vector3().crossVectors(bx, by));
-      mesh.matrix.setPosition(center);
+      if (!world) {
+        mesh.matrix.makeBasis(bx, by, new THREE.Vector3().crossVectors(bx, by));
+        mesh.matrix.setPosition(center);
+      }
       mesh.userData.vent = true;
       mesh.userData.boxShell = true;
       mesh.renderOrder = 3;
@@ -656,6 +699,9 @@ export class CaseViewer {
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
     geo.setAttribute('vent', new THREE.BufferAttribute(vent, 1));
+    // Solver coordinates: the perforation is drawn in the print's own wall axes.
+    geo.setAttribute('spos', new THREE.BufferAttribute(mesh.positions, 3));
+    geo.setAttribute('snrm', new THREE.BufferAttribute(mesh.normals, 3));
     geo.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
     const shell = new THREE.Mesh(geo, this.shellMaterial);
     shell.renderOrder = 2;

@@ -1,3 +1,4 @@
+import { openShare, perforation } from './perforation';
 import type {
   AdvancedModel,
   BoardFormFactor,
@@ -414,12 +415,18 @@ export const MATERIALS: Material[] = [
   { id: 'plywood', label: 'Birch plywood', densityGcm3: 0.68, defaultWall: 4.0 },
 ];
 
-export const VENT_STYLES: VentStyle[] = [
-  { id: 'hex', label: 'Hex mesh (~70% open)', openRatio: 0.7 },
-  { id: 'fine', label: 'Fine mesh (~60% open)', openRatio: 0.6 },
-  { id: 'round', label: 'Round perforation (~50% open)', openRatio: 0.5 },
-  { id: 'slots', label: 'Slots (~40% open)', openRatio: 0.4 },
-];
+/** Vent styles; the open ratio is the printed pattern's own (src/model/perforation.ts). */
+export const VENT_STYLES: VentStyle[] = (
+  [
+    ['hex', 'Hex mesh'],
+    ['fine', 'Fine round holes'],
+    ['round', 'Round holes'],
+    ['slots', 'Slots'],
+  ] as const
+).map(([id, name]) => {
+  const openRatio = openShare(perforation(id));
+  return { id, label: `${name} (~${Math.round(openRatio * 100)}% open)`, openRatio };
+});
 
 export const FINISHES = [
   { id: '#2b2d31', label: 'Graphite' },

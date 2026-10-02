@@ -1,7 +1,8 @@
 import { isWrap } from '../solver/shrinkwrap';
 import { useEffect, useRef, useState } from 'react';
 import type { DesignConfig } from '../model/types';
-import { MATERIALS } from '../model/presets';
+import { MATERIALS, VENT_STYLES } from '../model/presets';
+import { perforation } from '../model/perforation';
 import { DEFAULT_SLICER, type Manifest, type SlicerSettings } from '../print/analysis';
 import { DEFAULT_PRINT, planPieces, type PrintOptions } from '../print/printable';
 import type { MountPlan } from '../print/mounts';
@@ -70,10 +71,10 @@ export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: Des
           <NumberField id="bed-y" label="Y" unit="mm" value={opt.bed[1]} min={100} max={1000} onChange={(v) => setBed(1, v)} />
           <NumberField id="bed-z" label="Z" unit="mm" value={opt.bed[2]} min={100} max={1000} onChange={(v) => setBed(2, v)} />
         </div>
-        <div className="grid g2">
-          <NumberField id="hole-d" label="Vent holes" unit="mm" value={opt.holeDiameter} min={3} max={12} step={0.5} onChange={(v) => setOpt((o) => ({ ...o, holeDiameter: v, holePitch: Math.max(o.holePitch, v + 1.5) }))} />
-          <NumberField id="hole-p" label="Hole pitch" unit="mm" value={opt.holePitch} min={opt.holeDiameter + 1.2} max={20} step={0.5} onChange={(v) => setOpt((o) => ({ ...o, holePitch: v }))} />
-        </div>
+        <p className="muted small">
+          Vents: {VENT_STYLES.find((v) => v.id === cfg.prefs.ventStyleId)?.label ?? cfg.prefs.ventStyleId}, the pattern the 3D view shows (change it in Tune → Perforation). Holes
+          are cut whole, only where the wall faces its vent, with webs of at least {perforation(cfg.prefs.ventStyleId).web} mm and a solid border at the joints.
+        </p>
         <div className="grid g2">
           <label className="field" htmlFor="filament">
             <span className="field-label">Preferred filament</span>

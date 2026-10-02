@@ -282,7 +282,51 @@ export function shellGrid(design: Design, cfg: DesignConfig, organic: number, ce
   const closing = sampleGrid(closingGrid(design, union, closeRadius(s), cell));
   // min with the exact union: parts are always covered exactly; the closing only bridges gaps.
   forEachPoint(g, (p, id) => (g.vals[id] = Math.min(union(p), closing(p)) - soft));
+  fillPockets(g, wall);
   return g;
+}
+
+/**
+ * Fill enclosed pockets: air the wrap left between parts that is sealed off from the outside.
+ * Its wall band would print as a hollow shell floating inside the case, so every region of
+ * f > −wall (wall band and beyond) that the grid boundary can't reach is set inside the air.
+ */
+export function fillPockets(g: Grid, wall: number) {
+  const [nx, ny, nz] = g.n;
+  const n = nx * ny * nz;
+  const open = (id: number) => g.vals[id] > -wall;
+  const seen = new Uint8Array(n);
+  const queue = new Int32Array(n);
+  let head = 0;
+  let tail = 0;
+  const push = (id: number) => {
+    if (!seen[id] && open(id)) {
+      seen[id] = 1;
+      queue[tail++] = id;
+    }
+  };
+  for (let k = 0; k < nz; k++)
+    for (let j = 0; j < ny; j++)
+      for (let i = 0; i < nx; i++) if (i === 0 || j === 0 || k === 0 || i === nx - 1 || j === ny - 1 || k === nz - 1) push(i + nx * (j + ny * k));
+  while (head < tail) {
+    const id = queue[head++];
+    const i = id % nx;
+    const j = Math.floor(id / nx) % ny;
+    const k = Math.floor(id / (nx * ny));
+    if (i > 0) push(id - 1);
+    if (i < nx - 1) push(id + 1);
+    if (j > 0) push(id - nx);
+    if (j < ny - 1) push(id + nx);
+    if (k > 0) push(id - nx * ny);
+    if (k < nz - 1) push(id + nx * ny);
+  }
+  let filled = 0;
+  for (let id = 0; id < n; id++)
+    if (open(id) && !seen[id]) {
+      g.vals[id] = -wall - g.cell;
+      filled++;
+    }
+  return filled;
 }
 
 /** Outer-surface field (negative inside), sampled from the shell grid. */
