@@ -4,7 +4,7 @@ import { FLOOR_GAP_ZETA, MMH2O_TO_PA, perforatedPlateZeta } from '../solver/airf
 import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, dirVec, localBoxToWorld, signOf, wallAxes, type Box, type Dir, type Vec3 } from '../solver/geometry';
 import { boardStack } from '../solver/items';
-import { shellField } from '../solver/shrinkwrap';
+import { shellField, VENT_MAX_TILT } from '../solver/shrinkwrap';
 import { partAxis, partLocal, partPoint, TILT_PLATE } from '../solver/tilt';
 import type { Partition } from '../solver/chambers';
 import { CELL_SOLID, type FanDisk, type HeatSource, type Louvre, type Scene } from './solver';
@@ -215,7 +215,7 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
     let vent = -1;
     design.vents.forEach((v, idx) => {
       const a = axisOf(v.wall);
-      if (nrm[a] * signOf(v.wall) < 0.5) return;
+      if (nrm[a] * signOf(v.wall) < Math.cos((VENT_MAX_TILT * Math.PI) / 180)) return;
       const [xa, ya] = wallAxes(a);
       if (p[xa] < v.rect.x0 - 0.3 * h || p[xa] > v.rect.x1 + 0.3 * h || p[ya] < v.rect.y0 - 0.3 * h || p[ya] > v.rect.y1 + 0.3 * h) return;
       if (vent < 0 || design.vents[vent].kind === 'passive') vent = idx;

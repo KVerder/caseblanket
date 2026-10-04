@@ -13,6 +13,7 @@ import { SolverClient } from './state/solverClient';
 import { ModelPanel } from './ui/ModelPanel';
 import { PartsPanel } from './ui/PartsPanel';
 import { PrintDialog } from './ui/PrintDialog';
+import { ShapesPanel } from './ui/ShapesPanel';
 import { StructuresPanel } from './ui/StructuresPanel';
 import { SimPanel } from './ui/SimPanel';
 import { Explorer } from './ui/Explorer';
@@ -211,6 +212,7 @@ export default function App() {
       <Temperatures d={design} cfg={cfg} />
       <Noise d={design} cfg={cfg} />
       <Chambers d={design} cfg={cfg} />
+      <ShapesPanel design={design} cfg={cfg} setCfg={setCfg} />
       <PrintPlan design={design} cfg={cfg} />
       <AirflowTable d={design} cfg={cfg} />
       <StructuresPanel design={design} cfg={cfg} />

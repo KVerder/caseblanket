@@ -2,7 +2,7 @@ import type { DesignConfig } from '../model/types';
 import type { Design } from '../solver/evaluate';
 import { axisOf, signOf, wallAxes, type Box, type Vec3 } from '../solver/geometry';
 import { partLocal, TILT_PLATE } from '../solver/tilt';
-import { meshGrid, shellField, type Grid, type ShellMesh } from '../solver/shrinkwrap';
+import { isSculpt, meshGrid, shellBounds, shellField, VENT_MAX_TILT, type Grid, type ShellMesh } from '../solver/shrinkwrap';
 import { PARTITION_THICKNESS } from '../solver/chambers';
 import { plateMesh } from '../solver/partitions';
 import { DEFAULT_SLICER, OVERHANG_DEG, type Manifest, type SlicerSettings } from './analysis';
@@ -109,8 +109,10 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
    * Where a wall facing `s` along axis `a` is, over a rectangle of its plane: found from outside the
    * case inward, so a vent only ever cuts the outer wall it belongs to (on a shrinkwrapped shell a
    * side vent's holes would otherwise slice through any wall on its half of the case). Also says
-   * where that wall faces the vent within 30°: holes cut at a slant through a curved wall leave
-   * knife-edge webs and loose bits, so they go only where the wall is flat enough.
+   * where that wall faces the vent within VENT_MAX_TILT (50°) and is locally flat: a hole drilled
+   * along the vent's axis through a flat panel slanted up to 50° keeps full webs (everything
+   * stretches by the same 1/cos), but through a curved wall it leaves knife-edge webs and loose
+   * bits, so the slope may not change much across a hole.
    */
   const wallMap = (a: number, s: number, R: { x0: number; y0: number; x1: number; y1: number }) => {
     const [xa, ya] = wallAxes(a as 0 | 1 | 2);
@@ -138,28 +140,50 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
       }
     const at = (i: number, j: number) => t[Math.max(0, Math.min(nx - 1, i)) + nx * Math.max(0, Math.min(ny - 1, j))];
     return {
-      /** The wall's mid-plane position along the axis at (x, y), NaN where there is none. */
-      pos: (x: number, y: number) => at(Math.round((x - x0) / STEP), Math.round((y - y0) / STEP)),
-      flat: (x: number, y: number) => {
+      /**
+       * The wall's mid-plane position along the axis at (x, y), NaN where there is none.
+       * Bilinear: on a slanted panel the nearest sample is off by up to slope × 1 mm, enough to
+       * leave a skin over a hole.
+       */
+      pos: (x: number, y: number) => {
+        const fx = (x - x0) / STEP;
+        const fy = (y - y0) / STEP;
+        const i = Math.floor(fx);
+        const j = Math.floor(fy);
+        const u = fx - i;
+        const v = fy - j;
+        const a00 = at(i, j);
+        const a10 = at(i + 1, j);
+        const a01 = at(i, j + 1);
+        const a11 = at(i + 1, j + 1);
+        if (![a00, a10, a01, a11].every(Number.isFinite)) return at(Math.round(fx), Math.round(fy));
+        return (a00 * (1 - u) + a10 * u) * (1 - v) + (a01 * (1 - u) + a11 * u) * v;
+      },
+      /** Slope of the wall position (dx, dy) at a point, or null where there is no wall. */
+      slope: (x: number, y: number): [number, number] | null => {
         const i = Math.round((x - x0) / STEP);
         const j = Math.round((y - y0) / STEP);
-        if (!Number.isFinite(at(i, j))) return false;
+        if (!Number.isFinite(at(i, j))) return null;
         const gx = (at(i + 1, j) - at(i - 1, j)) / (2 * STEP);
         const gy = (at(i, j + 1) - at(i, j - 1)) / (2 * STEP);
-        return Number.isFinite(gx) && Number.isFinite(gy) && Math.hypot(gx, gy) <= 0.58;
+        return Number.isFinite(gx) && Number.isFinite(gy) ? [gx, gy] : null;
       },
     };
   };
   type WallMap = ReturnType<typeof wallMap>;
+  const MAX_SLOPE = Math.tan((VENT_MAX_TILT * Math.PI) / 180);
   const cuts = design.vents.map((v) => {
     const a = axisOf(v.wall);
     const [xa, ya] = wallAxes(a);
     return { a, xa, ya, s: signOf(v.wall), rect: v.rect, solidCut: v.kind === 'io' || v.kind === 'bracket', map: null as null | WallMap };
   });
-  /** On the vent's own wall: within the wall band where the map puts that wall. */
+  /** On the vent's own wall: within the wall band where the map puts that wall (thicker along the axis where the panel slants). */
   const onWall = (m: WallMap, p: Vec3, a: number, x: number, y: number) => {
     const t = m.pos(x, y);
-    return Number.isFinite(t) && Math.abs(p[a] - t) <= wall / 2 + 1;
+    if (!Number.isFinite(t)) return false;
+    const g = m.slope(x, y);
+    const stretch = g ? Math.sqrt(1 + g[0] * g[0] + g[1] * g[1]) : 1;
+    return Math.abs(p[a] - t) <= (wall / 2) * stretch + 1;
   };
   const JOINT_CLEAR = 3;
   // Mounting: openings cut through, screw holes through, and solid land around each screw.
@@ -243,7 +267,10 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
         if (h.cx - hx < R.x0 + 1.5 || h.cx + hx > R.x1 - 1.5 || h.cy - hy < R.y0 + 1.5 || h.cy + hy > R.y1 - 1.5) continue;
         if (keep.some((k) => k.a === c.a && k.s === c.s && Math.hypot(h.cx - k.x, h.cy - k.y) < k.r + hr)) continue;
         if (joints.some((j) => (j.axis === c.xa && Math.abs(j.at - h.cx) < hx + JOINT_CLEAR) || (j.axis === c.ya && Math.abs(j.at - h.cy) < hy + JOINT_CLEAR))) continue;
-        if (![[0, 0], [-hx, -hy], [hx, -hy], [-hx, hy], [hx, hy]].every(([dx, dy]) => c.map!.flat(h.cx + dx, h.cy + dy))) continue;
+        // On a flat-enough panel: within 50° of the vent's wall, and the slope about the same across the hole.
+        const sl = [[0, 0], [-hx, -hy], [hx, -hy], [-hx, hy], [hx, hy]].map(([dx, dy]) => c.map!.slope(h.cx + dx, h.cy + dy));
+        if (sl.some((g) => !g || Math.hypot(g[0], g[1]) > MAX_SLOPE)) continue;
+        if (sl.some((g) => Math.hypot(g![0] - sl[0]![0], g![1] - sl[0]![1]) > 0.2)) continue;
         d = Math.max(d, -h.d);
       }
     }
@@ -260,10 +287,11 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
 }
 
 /** Split the shell's bounds into a grid of pieces no larger than the bed allows. */
-export function planPieces(design: Design, opt: PrintOptions): Box[] {
+export function planPieces(design: Design, opt: PrintOptions, bounds?: Box): Box[] {
   const pad = design.wall + 14;
-  const lo: Vec3 = [-pad, -pad, -pad];
-  const hi: Vec3 = [design.interior[0] + pad, design.interior[1] + pad, design.interior[2] + pad];
+  // Sculpted shells reach past the interior box: split their measured bounds instead.
+  const lo: Vec3 = bounds ? ([...bounds.min] as Vec3) : [-pad, -pad, -pad];
+  const hi: Vec3 = bounds ? ([...bounds.max] as Vec3) : [design.interior[0] + pad, design.interior[1] + pad, design.interior[2] + pad];
   // Pieces may be rotated on the bed, so size them by the smallest bed dimension (less a margin).
   const max = Math.min(...opt.bed) - 8;
   const counts = [0, 1, 2].map((a) => Math.max(1, Math.ceil((hi[a] - lo[a]) / max)));
@@ -315,7 +343,7 @@ export function meshPiece(solid: (p: Vec3) => number, box: Box, cell: number): S
 }
 
 export function printPieces(design: Design, cfg: DesignConfig, opt: PrintOptions, progress?: (done: number, total: number) => void, plan = mountPlan(design, cfg)): PrintPiece[] {
-  const boxes = planPieces(design, opt);
+  const boxes = planPieces(design, opt, isSculpt(cfg) ? shellBounds(design, cfg) : undefined);
   // Joints between pieces: the box faces shared by two pieces.
   const joints: { axis: number; at: number }[] = [];
   for (let a = 0; a < 3; a++) {

@@ -446,6 +446,7 @@ export const DEFAULT_PREFS: Preferences = {
   edgeStyle: 'round',
   edgeRadius: 6,
   shell: 'wrap',
+  sculpt: { cut: 0.7, slope: 0, round: 0.6 },
   organic: 0.4,
   wallThickness: 2.4,
   materialId: 'petg',
@@ -512,3 +513,56 @@ export function defaultConfig(): DesignConfig {
     advanced: DEFAULT_ADVANCED,
   });
 }
+
+// ---------------------------------------------------------------- shapes and showcase
+
+/** Shell shapes compared for a layout: the same parts, a different skin. */
+export const SHELL_SHAPES: { id: string; label: string; prefs: Partial<Preferences> }[] = [
+  { id: 'box', label: 'Straight box', prefs: { shell: 'box' } },
+  { id: 'wrap', label: 'Shrinkwrap, smooth', prefs: { shell: 'wrap', organic: 0.8 } },
+  { id: 'facet', label: 'Faceted', prefs: { shell: 'facet', sculpt: { cut: 0.8, slope: 0, round: 0.6 } } },
+  { id: 'facet-lean', label: 'Faceted wedge, front leaning 25°', prefs: { shell: 'facet', sculpt: { cut: 0.8, slope: 25, round: 0.6 } } },
+  { id: 'pebble', label: 'Pebble', prefs: { shell: 'pebble', sculpt: { cut: 0.7, slope: 0, round: 0.6 } } },
+  { id: 'pebble-lean', label: 'Pebble wedge, front leaning 25°', prefs: { shell: 'pebble', sculpt: { cut: 0.7, slope: 25, round: 0.6 } } },
+];
+
+/** Three designs picked for how they look: the same parts and airflow model, sculpted shells. */
+export const SHOWCASE: { id: string; name: string; blurb: string; apply: (cfg: DesignConfig) => void }[] = [
+  {
+    id: 'pebble',
+    name: 'Pebble',
+    blurb: 'A river stone stood on end: every panel curves into the next, chalk white with honeycomb perforation.',
+    apply: (c) => {
+      c.prefs.orientation = 'tower';
+      c.prefs.shell = 'pebble';
+      c.prefs.sculpt = { cut: 0.7, slope: 0, round: 0.8 };
+      c.prefs.finish = '#e9e6df';
+      c.prefs.ventStyleId = 'hex';
+    },
+  },
+  {
+    id: 'seed',
+    name: 'Seed',
+    blurb: 'Lying low like a seed pod, its nose swept back; silver, with slotted vents that follow the length.',
+    apply: (c) => {
+      c.prefs.orientation = 'console';
+      c.prefs.shell = 'pebble';
+      c.prefs.sculpt = { cut: 0.7, slope: 28, round: 0.9 };
+      c.prefs.finish = '#c9ccd1';
+      c.prefs.ventStyleId = 'slots';
+      c.prefs.feetHeight = 20;
+    },
+  },
+  {
+    id: 'leaning-stone',
+    name: 'Leaning stone',
+    blurb: 'A tower on a wedge: its front leans back 35° under tighter curves, the base reaching forward; moss green, fine perforation.',
+    apply: (c) => {
+      c.prefs.orientation = 'tower';
+      c.prefs.shell = 'pebble';
+      c.prefs.sculpt = { cut: 0.7, slope: 35, round: 0.4 };
+      c.prefs.finish = '#3b4a3f';
+      c.prefs.ventStyleId = 'fine';
+    },
+  },
+];

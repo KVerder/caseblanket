@@ -8,7 +8,7 @@ import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, signOf, wallAxes, type Vec3 } from '../solver/geometry';
 import { routedPaths } from '../solver/hoses';
 import { PARTITION_THICKNESS } from '../solver/chambers';
-import type { ShellMesh } from '../solver/shrinkwrap';
+import { ventAxis, type ShellMesh } from '../solver/shrinkwrap';
 import type { SimFrame } from '../cfd/run';
 import type { Shaping } from '../cfd/scene';
 import { FlowLayer } from './flowLayer';
@@ -180,18 +180,20 @@ export class CaseViewer {
     // faces: the same pattern, lattice and orientation the printed pieces are cut with.
     this.shellMaterial.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute float vent;\nattribute vec3 spos;\nattribute vec3 snrm;\nvarying float vVent;\nvarying vec3 vSP;\nvarying vec3 vSN;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvVent = vent;\nvSP = spos;\nvSN = snrm;');
+        .replace('#include <common>', '#include <common>\nattribute float vent;\nattribute vec3 spos;\nattribute vec3 snrm;\nattribute float vaxis;\nvarying float vVent;\nvarying vec3 vSP;\nvarying vec3 vSN;\nvarying float vAxis;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvVent = vent;\nvSP = spos;\nvSN = snrm;\nvAxis = vaxis;');
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', `#include <common>\nvarying float vVent;\nvarying vec3 vSP;\nvarying vec3 vSN;\n${holeGlsl(perforation(this.ventStyle))}`)
+        .replace('#include <common>', `#include <common>\nvarying float vVent;\nvarying vec3 vSP;\nvarying vec3 vSN;\nvarying float vAxis;\n${holeGlsl(perforation(this.ventStyle))}`)
         .replace(
           '#include <color_fragment>',
           `#include <color_fragment>
           if (vVent > 0.5) {
             float hole = 1.0;
             if (vVent < 1.5) {
+              // The vent's own wall plane (as printed); the dominant normal only where none is known.
               vec3 an = abs(vSN);
-              vec2 uv = (an.x > an.y && an.x > an.z) ? vSP.yz : ((an.y > an.z) ? vSP.xz : vSP.xy);
+              float ax = vAxis > -0.5 ? vAxis : ((an.x > an.y && an.x > an.z) ? 0.0 : ((an.y > an.z) ? 1.0 : 2.0));
+              vec2 uv = ax < 0.5 ? vSP.yz : (ax < 1.5 ? vSP.xz : vSP.xy);
               vec2 cen;
               float dd = cbHole(uv, cen);
               float aa = max(fwidth(dd), 0.05);
@@ -713,6 +715,7 @@ void main() {
     // Solver coordinates: the perforation is drawn in the print's own wall axes.
     geo.setAttribute('spos', new THREE.BufferAttribute(mesh.positions, 3));
     geo.setAttribute('snrm', new THREE.BufferAttribute(mesh.normals, 3));
+    geo.setAttribute('vaxis', new THREE.BufferAttribute(ventAxis(design, mesh), 1));
     geo.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
     const shell = new THREE.Mesh(geo, this.shellMaterial);
     shell.renderOrder = 2;

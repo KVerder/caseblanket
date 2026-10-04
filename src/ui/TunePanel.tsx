@@ -69,10 +69,27 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
           value={p.shell}
           options={[
             { value: 'wrap', label: 'Shrinkwrap' },
+            { value: 'facet', label: 'Faceted', title: 'Flat panels at angles: bevelled edges and corners, optionally a leaning front' },
+            { value: 'pebble', label: 'Pebble', title: 'Curved panels rounding into each other, flat back and bottom' },
             { value: 'box', label: 'Straight box' },
           ]}
           onChange={(v) => set('shell', v)}
         />
+        {(p.shell === 'facet' || p.shell === 'pebble') && (
+          <>
+            {p.shell === 'facet' ? (
+              <Slider id="sculpt-cut" label="Bevels" value={p.sculpt.cut} min={0} max={1} step={0.05} left="Box" right="Down to the parts" format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => set('sculpt', { ...p.sculpt, cut: v })} />
+            ) : (
+              <Slider id="sculpt-round" label="Roundness" value={p.sculpt.round} min={0} max={1} step={0.05} left="Tight curves" right="Soft, swelling" format={(v) => `R ${Math.round(12 + 58 * v)} mm`} onChange={(v) => set('sculpt', { ...p.sculpt, round: v })} />
+            )}
+            <Slider id="sculpt-slope" label="Front lean" value={p.sculpt.slope} min={0} max={35} step={1} left="Upright" right="Leaning back" format={(v) => `${v}°`} onChange={(v) => set('sculpt', { ...p.sculpt, slope: v })} />
+            <p className="muted small">
+              Panels at angles or curving into each other, each pushed out just far enough to clear the parts, their air gaps and the hoses; the back stays flat for
+              the I/O and the bottom for the feet. Front lean replaces the upright front with a leaning one, held tight to the parts at the top, so the base comes
+              forward (a wedge). Vents and fans work on slanted panels up to 50°; Shapes in the results compares the litres.
+            </p>
+          </>
+        )}
         {p.shell === 'wrap' && (
           <>
             <Slider

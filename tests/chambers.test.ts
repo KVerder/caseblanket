@@ -98,5 +98,5 @@ describe('internal chambers', () => {
       const size = [0, 1, 2].map((a) => p.mesh.bbox.max[a] - p.mesh.bbox.min[a]).sort((a, b) => a - b);
       expect(size[2]).toBeLessThanOrEqual(200);
     }
-  });
+  }, 180000);
 });

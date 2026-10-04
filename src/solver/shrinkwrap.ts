@@ -2,6 +2,7 @@ import { MATERIALS } from '../model/presets';
 import type { DesignConfig } from '../model/types';
 import type { Design } from './evaluate';
 import { connectorBox, gpuWrapClearance, hoseBox, hoseDistance, routedPaths, type HosePath } from './hoses';
+import { sculptBounds, sculptField } from './sculpt';
 import { axisOf, signOf, wallAxes, type Box, type Vec3 } from './geometry';
 
 /**
@@ -53,6 +54,8 @@ const CLOSE_MIN = 15;
 const CLOSE_RANGE = 50;
 
 export const isWrap = (cfg: DesignConfig) => cfg.prefs.shell !== 'box';
+/** Angled (facet) or curved (pebble) panels: analytic convex shells, see sculpt.ts. */
+export const isSculpt = (cfg: DesignConfig) => cfg.prefs.shell === 'facet' || cfg.prefs.shell === 'pebble';
 export const closeRadius = (s: number) => CLOSE_MIN + CLOSE_RANGE * Math.min(1, Math.max(0, s));
 
 function sdBox(p: Vec3, b: Box, r: number): number {
@@ -272,6 +275,14 @@ export function shellGrid(design: Design, cfg: DesignConfig, organic: number, ce
   const wall = design.wall;
   const soft = wall + SOFT_MIN + SOFT_RANGE * s + cell * 0.45;
   const pad = soft + 3 * cell;
+  if (isSculpt(cfg)) {
+    // A sculpted shell can reach well past the interior box: the grid follows its own bounds.
+    const fs = sculptField(design, cfg);
+    const b = sculptBounds(design, fs);
+    const gs = makeGrid(b.min.map((x) => x - 3 * cell) as Vec3, b.max.map((x) => x + 3 * cell) as Vec3, cell);
+    forEachPoint(gs, (p, id) => (gs.vals[id] = fs(p)));
+    return gs;
+  }
   const g = makeGrid([-pad, -pad, -pad], [design.interior[0] + pad, design.interior[1] + pad, design.interior[2] + pad], cell);
   if (!isWrap(cfg)) {
     const fb = boxField(design, cfg);
@@ -332,6 +343,7 @@ export function fillPockets(g: Grid, wall: number) {
 /** Outer-surface field (negative inside), sampled from the shell grid. */
 export function shellField(design: Design, cfg: DesignConfig, organic: number, detail = 1): Field {
   if (!isWrap(cfg)) return boxField(design, cfg);
+  if (isSculpt(cfg)) return sculptField(design, cfg);
   return sampleGrid(shellGrid(design, cfg, organic, defaultCell(design, detail)));
 }
 
@@ -487,6 +499,10 @@ export function meshMetrics(design: Design, cfg: DesignConfig, m: ShellMesh): Wr
  * Per-vertex vent flag for a shell mesh: 1 = perforated, 2 = solid cut-out (I/O, bracket).
  * A vertex belongs to a vent when it faces that vent's wall and projects into the vent's rectangle.
  */
+/** Steepest slant of a panel, from its vent's wall, that still gets perforated (degrees). */
+export const VENT_MAX_TILT = 50;
+const VENT_COS = Math.cos((VENT_MAX_TILT * Math.PI) / 180);
+
 export function ventMask(design: Design, mesh: ShellMesh): Float32Array {
   const out = new Float32Array(mesh.positions.length / 3);
   for (let v = 0; v < out.length; v++) {
@@ -494,7 +510,7 @@ export function ventMask(design: Design, mesh: ShellMesh): Float32Array {
     const nrm = [mesh.normals[3 * v], mesh.normals[3 * v + 1], mesh.normals[3 * v + 2]];
     for (const vent of design.vents) {
       const a = axisOf(vent.wall);
-      if (nrm[a] * signOf(vent.wall) < 0.55) continue;
+      if (nrm[a] * signOf(vent.wall) < VENT_COS) continue;
       const [xa, ya] = wallAxes(a);
       const r = vent.rect;
       if (p[xa] < r.x0 - 1 || p[xa] > r.x1 + 1 || p[ya] < r.y0 - 1 || p[ya] > r.y1 + 1) continue;
@@ -502,4 +518,37 @@ export function ventMask(design: Design, mesh: ShellMesh): Float32Array {
     }
   }
   return out;
+}
+
+/**
+ * Per-vertex axis of the vent wall a vertex belongs to (−1: none), so the 3D view lays the hole
+ * pattern out in that wall's plane, as the print does, even on a bevel that faces two walls.
+ */
+export function ventAxis(design: Design, mesh: ShellMesh): Float32Array {
+  const out = new Float32Array(mesh.positions.length / 3).fill(-1);
+  for (let v = 0; v < out.length; v++) {
+    const p = [mesh.positions[3 * v], mesh.positions[3 * v + 1], mesh.positions[3 * v + 2]];
+    const nrm = [mesh.normals[3 * v], mesh.normals[3 * v + 1], mesh.normals[3 * v + 2]];
+    let best = -1;
+    let bestDot = VENT_COS;
+    for (const vent of design.vents) {
+      const a = axisOf(vent.wall);
+      const d = nrm[a] * signOf(vent.wall);
+      if (d < bestDot) continue;
+      const [xa, ya] = wallAxes(a);
+      const r = vent.rect;
+      if (p[xa] < r.x0 - 1 || p[xa] > r.x1 + 1 || p[ya] < r.y0 - 1 || p[ya] > r.y1 + 1) continue;
+      best = a;
+      bestDot = d;
+    }
+    out[v] = best;
+  }
+  return out;
+}
+
+/** Outer bounding box of the shell for any shell kind (the print splitter and grids cover it). */
+export function shellBounds(design: Design, cfg: DesignConfig): Box {
+  if (isSculpt(cfg)) return sculptBounds(design, sculptField(design, cfg));
+  const pad = design.wall + SOFT_MIN + SOFT_RANGE + 12;
+  return { min: [-pad, -pad, -pad], max: [design.interior[0] + pad, design.interior[1] + pad, design.interior[2] + pad] };
 }

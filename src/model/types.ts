@@ -176,7 +176,8 @@ export interface VentStyle {
   openRatio: number;
 }
 
-export type ShellKind = 'box' | 'wrap';
+/** Straight box, shrinkwrap, flat panels at angles (facet), or curved panels (pebble). */
+export type ShellKind = 'box' | 'wrap' | 'facet' | 'pebble';
 
 export type LoadProfileId = 'gaming' | 'full';
 
@@ -213,6 +214,8 @@ export interface Preferences {
   minAirflowAdequacy: number;
   /** Straight box, or a shell shrinkwrapped around the parts, hoses and clearances. */
   shell: ShellKind;
+  /** Facet and pebble shells: bevel depth, front lean (degrees) and roundness. */
+  sculpt: { cut: number; slope: number; round: number };
   /** Shrinkwrap smoothness: 0 = tight with straight faces, 1 = smooth, bridging gaps up to ~180 mm. */
   organic: number;
   edgeStyle: EdgeStyle;

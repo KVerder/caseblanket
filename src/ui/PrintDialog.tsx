@@ -1,4 +1,4 @@
-import { isWrap } from '../solver/shrinkwrap';
+import { isSculpt, isWrap, shellBounds } from '../solver/shrinkwrap';
 import { useEffect, useRef, useState } from 'react';
 import type { DesignConfig } from '../model/types';
 import { MATERIALS, VENT_STYLES } from '../model/presets';
@@ -23,7 +23,7 @@ export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: Des
     dialog.current?.showModal();
     return () => worker.current?.terminate();
   }, []);
-  const pieces = planPieces(design, opt).length;
+  const pieces = planPieces(design, opt, isSculpt(cfg) ? shellBounds(design, cfg) : undefined).length;
   const thin = design.wall < 2;
 
   const build = () => {
@@ -62,7 +62,7 @@ export function PrintDialog({ design, cfg, onClose }: { design: Design; cfg: Des
       </div>
       <div className="catalog-body print-body">
         <p className="small">
-          The {isWrap(cfg) ? 'shrinkwrapped' : 'box'} shell as solid walls with the vent holes and I/O cut-outs cut through, split into
+          The {cfg.prefs.shell === 'wrap' ? 'shrinkwrapped' : isWrap(cfg) ? 'sculpted' : 'box'} shell as solid walls with the vent holes and I/O cut-outs cut through, split into
           pieces that fit your printer. One closed STL per piece, zipped, in millimetres.
         </p>
         <span className="field-label">Print bed (mm)</span>

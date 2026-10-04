@@ -128,6 +128,17 @@ for (const [name, vp, opts] of [
   const fanParts = await page.evaluate(() => window.__caseblanketViewer.partsGroup.children.filter((g) => /^fan-/.test(g.userData.partId)).length);
   check(fanParts === 2, `"2 × 120 mm" case fans are placed and drawn (${fanParts} in the 3D view)`);
   await page.screenshot({ path: `${out}/case-fans.png` });
+  // Shapes: the selected layout under six shells, and a showcase design applied in one click.
+  const shapes = page.locator('section.shapes');
+  await shapes.scrollIntoViewIfNeeded();
+  check((await shapes.locator('tbody tr').count()) === 6, 'shapes lists the layout under six shells');
+  await shapes.getByRole('button', { name: 'Pebble', exact: true }).click();
+  await page.waitForTimeout(2500);
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+  await page.waitForTimeout(4000);
+  const pebble = await page.evaluate(() => window.__caseblanketViewer.shell.children.some((c) => c.userData.organic));
+  check(pebble, 'the Pebble showcase design shows a sculpted shell');
+  await page.screenshot({ path: `${out}/showcase-pebble.png` });
   await ctx.close();
 }
 

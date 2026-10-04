@@ -386,11 +386,21 @@ export function mountPlan(design: Design, cfg: DesignConfig): MountPlan {
     out.hardware.push({ item: '#6-32 UNC × 6 mm screw (PSU)', qty: ph.holes.length, note: 'Standard PSU screws; the asymmetric ATX hole only lines up one way round — check on the fit-test plate.' });
   }
 
-  // ---- power button: a 16 mm hole on the front panel, clear of vents and edges.
-  const spot = findSpot(design, F, wall, 0, POWER_BUTTON_D, POWER_BUTTON_D, 8);
-  const btn: WallHole | null = spot ? { label: 'power button', wall: 0, x: spot.x, y: spot.y, d: POWER_BUTTON_D } : null;
+  // ---- power button: a 16 mm hole on the front panel, clear of vents and edges. A curved shell
+  // may have no flat patch there; then the top, then the sides (never the back or the bottom).
+  const upWall: Dir = cfg.prefs.orientation === 'tower' ? 2 : 4;
+  const sides = ([2, 3, 4, 5] as Dir[]).filter((d) => d !== upWall && d !== design.bottomWall);
+  let btn: WallHole | null = null;
+  for (const w of [0, upWall, ...sides] as Dir[]) {
+    const spot = findSpot(design, F, wall, w, POWER_BUTTON_D, POWER_BUTTON_D, 8);
+    if (spot) {
+      btn = { label: 'power button', wall: w, x: spot.x, y: spot.y, d: POWER_BUTTON_D };
+      break;
+    }
+  }
   if (btn) {
     out.holes.push(btn);
+    if (btn.wall !== 0) out.warnings.push(`The front panel curves too much for the power button; it goes on the ${btn.wall === upWall ? 'top' : 'side'} panel instead.`);
     out.hardware.push({ item: '16 mm momentary push button, normally open, with leads', qty: 1, note: 'Wire it to the board’s front-panel PWR_SW pins (polarity doesn’t matter).' });
   } else out.warnings.push('No clear spot on the front panel for a 16 mm power button: drill one where convenient, or use a remote switch.');
 
@@ -455,8 +465,17 @@ function findSpot(design: Design, F: (p: Vec3) => number, wallT: number, wall: D
         )
       )
         continue;
-      const ts = [wallAt(x, y), wallAt(x - w / 2 - margin / 2, y - h / 2 - margin / 2), wallAt(x + w / 2 + margin / 2, y + h / 2 + margin / 2), wallAt(x - w / 2 - margin / 2, y + h / 2 + margin / 2), wallAt(x + w / 2 + margin / 2, y - h / 2 - margin / 2)];
-      if (ts.some((t) => !Number.isFinite(t)) || Math.max(...ts) - Math.min(...ts) > 1) continue;
+      const dx = w / 2 + margin / 2;
+      const dy = h / 2 + margin / 2;
+      const ts = [wallAt(x, y), wallAt(x - dx, y - dy), wallAt(x + dx, y + dy), wallAt(x - dx, y + dy), wallAt(x + dx, y - dy)];
+      if (ts.some((t) => !Number.isFinite(t))) continue;
+      // Flat: the corners lie on one plane through the middle within 0.5 mm (a slanted panel is
+      // fine up to 30°; a curve is not), so a button's nut or a socket's flange seats.
+      const gx = (ts[2] + ts[4] - ts[1] - ts[3]) / (4 * dx);
+      const gy = (ts[2] + ts[3] - ts[1] - ts[4]) / (4 * dy);
+      if (Math.hypot(gx, gy) > Math.tan(Math.PI / 6)) continue;
+      const off = [[-dx, -dy], [dx, dy], [-dx, dy], [dx, -dy]].map(([ox, oy], i) => Math.abs(ts[i + 1] - (ts[0] + gx * ox + gy * oy)));
+      if (Math.max(...off) > 0.5) continue;
       if (!best || y > best.score) best = { x, y, score: y };
     }
   return best;
