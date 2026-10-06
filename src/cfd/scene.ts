@@ -5,6 +5,8 @@ import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, dirVec, localBoxToWorld, signOf, wallAxes, type Box, type Dir, type Vec3 } from '../solver/geometry';
 import { boardStack } from '../solver/items';
 import { shellField, VENT_MAX_TILT } from '../solver/shrinkwrap';
+import { HOLE_ROUND, roundedPlateZeta } from '../solver/flow';
+import { perforation } from '../model/perforation';
 import { partAxis, partLocal, partPoint, TILT_PLATE } from '../solver/tilt';
 import type { Partition } from '../solver/chambers';
 import { CELL_SOLID, type FanDisk, type HeatSource, type Louvre, type Scene } from './solver';
@@ -73,7 +75,14 @@ export function porousBeta(zeta: number, cells: number, h: number) {
   return zeta / (2 * (cells + 1) * h);
 }
 
-export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping = NO_SHAPING, opts: SceneOptions = {}): Scene {
+export function buildScene(design: Design, cfg: DesignConfig, shapingIn: Shaping = NO_SHAPING, opts: SceneOptions = {}): Scene {
+  // Flow tab: ducts on every fan that can take one, deflectors on every exhaust (on top of any the optimiser chose).
+  const fl = cfg.prefs.flow;
+  const shaping: Shaping = {
+    ...shapingIn,
+    ducts: fl?.ducts ? [...new Set([...shapingIn.ducts, ...ductCandidates(design)])] : shapingIn.ducts,
+    louvres: fl?.deflectors && !shapingIn.louvres.length ? louvreCandidates(design) : shapingIn.louvres,
+  };
   const margin = opts.margin ?? 60;
   const target = opts.cells ?? 45000;
   const span: Vec3 = [design.interior[0] + 2 * margin, design.interior[1] + 2 * margin, design.interior[2] + 2 * margin];
@@ -180,7 +189,8 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
   const field = shellField(design, cfg, cfg.prefs.organic ?? 0);
   const wall = design.wall;
   const vs = VENT_STYLES.find((v) => v.id === cfg.prefs.ventStyleId) ?? VENT_STYLES[0];
-  const ventBeta = betaFor(perforatedPlateZeta(vs.openRatio) + (cfg.prefs.dustFilters ? cfg.advanced.dustFilterLossK : 0), h);
+  const plateZeta = cfg.prefs.flow?.roundedHoles ? roundedPlateZeta(vs.openRatio, HOLE_ROUND / Math.max(1, perforation(vs.id).size)) : perforatedPlateZeta(vs.openRatio);
+  const ventBeta = betaFor(plateZeta + (cfg.prefs.dustFilters ? cfg.advanced.dustFilterLossK : 0), h);
   const interior: number[] = [];
   const ventCells: number[][] = design.vents.map(() => []);
   const fieldVals = new Float32Array(total);
@@ -491,19 +501,7 @@ export function buildScene(design: Design, cfg: DesignConfig, shaping: Shaping =
     // Duct: seal the gap between the part's fan face and its vented wall with four side plates.
     if (shaping.ducts.includes(part.id) && part.face !== undefined) {
       const a = axisOf(part.face);
-      const out = signOf(part.face) > 0;
-      const gapBox: Box = { min: [...part.body.min] as Vec3, max: [...part.body.max] as Vec3 };
-      if (part.kind === 'board') {
-        gapBox.min = [part.body.min[0] + bp.socketU - cooler.depth / 2, part.body.min[1] + bs.pcbDv + bp.socketV - cooler.width / 2, part.body.min[2]];
-        gapBox.max = [part.body.min[0] + bp.socketU + cooler.depth / 2, part.body.min[1] + bs.pcbDv + bp.socketV + cooler.width / 2, part.body.max[2]];
-      }
-      if (out) {
-        gapBox.min[a] = part.body.max[a] - h;
-        gapBox.max[a] = design.interior[a] + wall;
-      } else {
-        gapBox.min[a] = -wall;
-        gapBox.max[a] = part.body.min[a] + h;
-      }
+      const gapBox = ductGap(design, cfg, part, h);
       for (const plate of ductPlates(gapBox, a, h * 0.5)) {
         // Only inside the shell, and never on top of a part's own cells.
         for (const c of cellsIn(plate)) if (fieldVals[c] < -wall - 0.25 * h && cellType[c] !== CELL_SOLID && beta[0][c] === 0) cellType[c] = CELL_SOLID;
@@ -580,6 +578,29 @@ export function louvreDirection(wall: Dir, toward: Dir): [number, number, number
   const nrm = dirVec(wall);
   const tan = dirVec(toward);
   return [0, 1, 2].map((a) => Math.cos(LOUVRE_ANGLE) * nrm[a] + Math.sin(LOUVRE_ANGLE) * tan[a]) as [number, number, number];
+}
+
+/** The gap a duct closes: from a part's fan face (overlapping it by `overlap`) to its panel, across the fan's footprint. */
+export function ductGap(design: Design, cfg: DesignConfig, part: PlacedPart, overlap: number): Box {
+  const a = axisOf(part.face!);
+  const out = signOf(part.face!) > 0;
+  const wall = design.wall;
+  const gapBox: Box = { min: [...part.body.min] as Vec3, max: [...part.body.max] as Vec3 };
+  if (part.kind === 'board') {
+    const bs = boardStack(cfg, design.profile.extraGap);
+    const bp = cfg.parts.board;
+    const cooler = cfg.parts.cooler;
+    gapBox.min = [part.body.min[0] + bp.socketU - cooler.depth / 2, part.body.min[1] + bs.pcbDv + bp.socketV - cooler.width / 2, part.body.min[2]];
+    gapBox.max = [part.body.min[0] + bp.socketU + cooler.depth / 2, part.body.min[1] + bs.pcbDv + bp.socketV + cooler.width / 2, part.body.max[2]];
+  }
+  if (out) {
+    gapBox.min[a] = part.body.max[a] - overlap;
+    gapBox.max[a] = design.interior[a] + wall;
+  } else {
+    gapBox.min[a] = -wall;
+    gapBox.max[a] = part.body.min[a] + overlap;
+  }
+  return gapBox;
 }
 
 /** The four side plates of a duct around `gap` (open along axis `a`). */

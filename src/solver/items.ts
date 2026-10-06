@@ -1,4 +1,5 @@
 import { SLIM_RAD_FAN } from '../model/presets';
+import { DEEP_PLENUM } from './flow';
 import { TILT_ANGLES, TILT_PLATE, tiltDims, type Tilt } from './tilt';
 import type { DesignConfig, FanSpec, RadiatorSpec, TopologyId } from '../model/types';
 import {
@@ -381,7 +382,7 @@ function radVariants(
   const fan = profile.slim && rad.fan.size === 120 ? SLIM_RAD_FAN : rad.fan;
   const size: Vec3 = [rad.length, rad.width, rad.coreThickness + fan.thickness];
   const wallGap = cfg.advanced.radWallGap + profile.extraGap / 2;
-  const plenum = cfg.advanced.radPlenumGap + profile.extraGap;
+  const plenum = cfg.advanced.radPlenumGap + profile.extraGap + (cfg.prefs.flow?.deepPlenums ? DEEP_PLENUM : 0);
   const out: Variant[] = [];
   for (const frame of allFrames()) {
     const face = sideToWorld(frame, 4);
@@ -436,7 +437,7 @@ function caseFanVariants(ctx: BuildContext, fan: FanSpec, layers: LayerId[], all
   const tol = cfg.prefs.tolerance / 2;
   const size: Vec3 = [fan.size, fan.size, fan.thickness];
   const wallGap = cfg.advanced.radWallGap + profile.extraGap / 2;
-  const plenum = cfg.advanced.radPlenumGap + profile.extraGap;
+  const plenum = cfg.advanced.radPlenumGap + profile.extraGap + (cfg.prefs.flow?.deepPlenums ? DEEP_PLENUM : 0);
   const clears = withTol(
     [
       { side: 4, depth: wallGap },

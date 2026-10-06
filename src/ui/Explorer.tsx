@@ -4,6 +4,8 @@ import type { DesignConfig, LoadProfileId } from '../model/types';
 import { TOPOLOGY_LABELS, type Design } from '../solver/evaluate';
 import { frontier, rescoreCandidates, sizeOf, type SizeAxis } from '../solver/frontier';
 import { CfdClient } from '../state/cfdClient';
+import { SolverClient } from '../state/solverClient';
+import { ALL_FLOW, NO_FLOW } from '../solver/flow';
 import { LOAD_LABEL } from './ResultsPanel';
 
 interface Pt {
@@ -75,6 +77,10 @@ export function Explorer({
     results: {},
   });
   const [view3d, setView3d] = useState(false);
+  // The same parts solved with every flow structure on (or off, if they are on now): its frontier, overlaid.
+  const flowOn = !!cfg.prefs.flow && Object.values(cfg.prefs.flow).every(Boolean);
+  const [alt, setAlt] = useState<{ running: boolean; space?: Design[]; error?: string }>({ running: false });
+  const altClient = useRef<SolverClient | null>(null);
   const client = useRef<CfdClient | null>(null);
   const scoreClient = useRef<CfdClient | null>(null);
   const svg = useRef<SVGSVGElement | null>(null);
@@ -97,6 +103,7 @@ export function Explorer({
     setCheck({ running: false, done: 0, total: 0, results: [] });
     setScore({ running: false, done: 0, total: 0, results: {} });
     setView3d(false);
+    setAlt({ running: false });
   }, [space]);
   useEffect(
     () => () => {
@@ -135,8 +142,23 @@ export function Explorer({
   const all = [...pts, sel];
   const fmtY = (v: number) => (yMode === 'noise' ? `${(-v).toFixed(1)} dB(A)` : pct(v));
 
-  const xs = [...all, ...outs].map((p) => p.size);
-  const ysRaw = all.map((p) => p.margin);
+  const altPts: Pt[] = useMemo(
+    () => (alt.space && yMode === 'margin' && !in3d ? alt.space.filter((d) => !d.invalid && d.noise[load].feasible).map((d) => ({ d, id: d.id, size: sizeOf(d, axis), margin: d.flow.worstMargin, out: false })) : []),
+    [alt.space, yMode, in3d, axis, load],
+  );
+  const altFront = useMemo(() => frontier(altPts), [altPts]);
+  const runAlt = () => {
+    if (alt.space) return setAlt({ running: false });
+    altClient.current ??= new SolverClient();
+    setAlt({ running: true });
+    const flow = flowOn ? { ...NO_FLOW } : { ...ALL_FLOW };
+    altClient.current
+      .run({ ...cfg, prefs: { ...cfg.prefs, flow } })
+      .then((r) => setAlt({ running: false, space: r.space }))
+      .catch((e: Error) => e.message !== 'superseded' && setAlt({ running: false, error: e.message }));
+  };
+  const xs = [...all, ...outs, ...altFront].map((p) => p.size);
+  const ysRaw = [...all, ...altFront].map((p) => p.margin);
   if (yMode === 'margin' && !in3d) for (const r of check.results) ysRaw.push(r.thermal.worstMargin);
   const xLo = Math.min(...xs);
   const xHi = Math.max(...xs);
@@ -324,6 +346,15 @@ export function Explorer({
           {pts.map((p) => (
             <circle key={p.id} cx={sx(p.size)} cy={sy(p.margin)} r={3.5} className="pt" />
           ))}
+          {/* the other flow-structure setting's frontier, dashed */}
+          {altFront.length > 0 && (
+            <g aria-label={flowOn ? 'Frontier without flow structures' : 'Frontier with every flow structure'}>
+              <polyline points={altFront.map((p) => `${sx(p.size)},${sy(p.margin)}`).join(' ')} className="alt-line" />
+              {altFront.map((p) => (
+                <circle key={`a${p.id}`} cx={sx(p.size)} cy={sy(p.margin)} r={4} className="alt-pt" />
+              ))}
+            </g>
+          )}
           {/* frontier */}
           <polyline points={front.map((p) => `${sx(p.size)},${sy(p.margin)}`).join(' ')} className="front-line" />
           {front.map((p) => (
@@ -395,6 +426,11 @@ export function Explorer({
         <span>
           <i className="key sel" /> Selected
         </span>
+        {altFront.length > 0 && (
+          <span>
+            <i className="key alt" /> {flowOn ? 'Without flow structures' : 'With every flow structure'}
+          </span>
+        )}
         {check.results.length > 0 && (
           <span>
             <i className="key check" /> 3D simulation
@@ -436,6 +472,9 @@ export function Explorer({
       )}
 
       <div className="explorer-actions">
+        <button type="button" className="btn ghost small" onClick={runAlt} disabled={alt.running || yMode !== 'margin'}>
+          {alt.running ? 'Solving…' : alt.space ? 'Hide the comparison' : flowOn ? 'Compare without flow structures' : 'Compare with every flow structure'}
+        </button>
         <button type="button" className="btn small" onClick={runScore} disabled={score.running || yMode !== 'margin'}>
           {score.running ? `Simulating ${score.done + 1} of ${score.total}…` : Object.keys(score.results).length ? 'Score again in 3D' : 'Score the frontier in 3D (20 designs)'}
         </button>

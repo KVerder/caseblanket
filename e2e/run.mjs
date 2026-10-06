@@ -139,6 +139,32 @@ for (const [name, vp, opts] of [
   const pebble = await page.evaluate(() => window.__caseblanketViewer.shell.children.some((c) => c.userData.organic));
   check(pebble, 'the Pebble showcase design shows a sculpted shell');
   await page.screenshot({ path: `${out}/showcase-pebble.png` });
+  // Flow tab: a structure switched on re-solves the design.
+  await page.getByRole('tab', { name: 'Flow' }).click();
+  await page.locator('#flow-roundedHoles').check();
+  await page.waitForTimeout(2500);
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+  check(await page.locator('#flow-roundedHoles').isChecked(), 'the Flow tab switches a structure on');
+  // Explorer: the other flow-structure setting's frontier, overlaid.
+  const exp = page.locator('.explorer');
+  await exp.scrollIntoViewIfNeeded();
+  await exp.getByRole('button', { name: /Compare with every flow structure/ }).click();
+  await exp.locator('.alt-line').waitFor({ state: 'attached', timeout: 60000 });
+  check((await exp.locator('.alt-pt').count()) >= 1, 'the explorer overlays the frontier with every flow structure');
+  // Funkify: organic designs within the uncertainty of the coolest, one applied.
+  const funk = page.locator('section.funkify');
+  await funk.scrollIntoViewIfNeeded();
+  await funk.getByRole('button', { name: 'Funkify', exact: true }).click();
+  await funk.locator('.funk-list li').first().waitFor({ timeout: 300000 });
+  const picks = await funk.locator('.funk-list li').count();
+  check(picks >= 1, `Funkify offers ${picks} sculpted design(s)`);
+  await funk.locator('.funk-list li button').first().click();
+  await page.waitForTimeout(2500);
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
+  await page.waitForTimeout(4000);
+  const sculpted = await page.evaluate(() => window.__caseblanketViewer.shell.children.some((c) => c.userData.organic));
+  check(sculpted, 'applying a Funkify pick shows its sculpted shell');
+  await page.screenshot({ path: `${out}/funkify.png`, fullPage: false });
   await ctx.close();
 }
 

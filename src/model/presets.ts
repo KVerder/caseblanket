@@ -457,6 +457,7 @@ export const DEFAULT_PREFS: Preferences = {
   radDirection: 'auto',
   allowSlimFans: true,
   allowTilt: true,
+  flow: { ducts: false, bellMouths: false, diffusers: false, roundedHoles: false, radiusedTurns: false, deepPlenums: false, deflectors: false },
   orientation: 'tower',
   topologies: { flat: true, sandwich: true, direct: true, 'direct-stack': true },
   riserLength: 200,

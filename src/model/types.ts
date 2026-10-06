@@ -229,6 +229,8 @@ export interface Preferences {
   ventPanels: Record<PanelName, boolean>;
   radDirection: RadDirection;
   allowSlimFans: boolean;
+  /** Flow structures switched on in the Flow tab (see solver/flow.ts). */
+  flow: { ducts: boolean; bellMouths: boolean; diffusers: boolean; roundedHoles: boolean; radiusedTurns: boolean; deepPlenums: boolean; deflectors: boolean };
   /** Let radiators and case fans tilt against their panel (15, 30, 45°) on a printed wedge frame. */
   allowTilt: boolean;
   orientation: Orientation;

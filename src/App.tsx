@@ -14,6 +14,8 @@ import { ModelPanel } from './ui/ModelPanel';
 import { PartsPanel } from './ui/PartsPanel';
 import { PrintDialog } from './ui/PrintDialog';
 import { ShapesPanel } from './ui/ShapesPanel';
+import { FlowPanel } from './ui/FlowPanel';
+import { FunkifyPanel } from './ui/FunkifyPanel';
 import { StructuresPanel } from './ui/StructuresPanel';
 import { SimPanel } from './ui/SimPanel';
 import { Explorer } from './ui/Explorer';
@@ -23,7 +25,7 @@ import { AirflowTable, Candidates, Chambers, Checks, Noise, Summary, Temperature
 import { TunePanel } from './ui/TunePanel';
 import { ViewerPanel } from './ui/ViewerPanel';
 
-type Tab = 'design' | 'parts' | 'tune' | 'model';
+type Tab = 'design' | 'parts' | 'tune' | 'flow' | 'model';
 type Theme = 'system' | 'light' | 'dark';
 
 function useMedia(q: string) {
@@ -61,6 +63,8 @@ export default function App() {
   const [cfg, setCfg] = useState<DesignConfig>(initialConfig);
   const [result, setResult] = useState<SolveResult | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  // A design to select once the next solve arrives (Funkify picks a layout and its settings together).
+  const pendingPick = useRef<string | null>(null);
   const [solving, setSolving] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -87,7 +91,9 @@ export default function App() {
         .run(cfg, setProgress)
         .then((r) => {
           setResult(r);
-          setSelected(r.designs[0]?.id ?? null);
+          const want = pendingPick.current;
+          pendingPick.current = null;
+          setSelected(want && (r.space.some((d) => d.id === want) || r.designs.some((d) => d.id === want)) ? want : (r.designs[0]?.id ?? null));
           setError(r.designs.length ? null : 'No layout fits these parts and limits. Relax a size limit, allow more layouts or vent more panels.');
           setSolving(false);
         })
@@ -202,6 +208,7 @@ export default function App() {
     ...(wide ? [] : [{ id: 'design' as Tab, label: 'Design' }]),
     { id: 'parts', label: 'Parts' },
     { id: 'tune', label: 'Tune' },
+    { id: 'flow', label: 'Flow' },
     { id: 'model', label: 'Model' },
   ];
 
@@ -209,6 +216,7 @@ export default function App() {
     <>
       <Summary d={design} cfg={cfg} />
       <Explorer space={result.space} selected={design} cfg={cfg} onSelect={setSelected} />
+      <FunkifyPanel cfg={cfg} setCfg={setCfg} onPick={(id) => (pendingPick.current = id)} />
       <Temperatures d={design} cfg={cfg} />
       <Noise d={design} cfg={cfg} />
       <Chambers d={design} cfg={cfg} />
@@ -325,6 +333,7 @@ export default function App() {
             {tab === 'design' && (results ?? <p className="muted">Working out the first design…</p>)}
             {tab === 'parts' && <PartsPanel cfg={cfg} setCfg={setCfg} />}
             {tab === 'tune' && <TunePanel cfg={cfg} setCfg={setCfg} />}
+            {tab === 'flow' && <FlowPanel cfg={cfg} setCfg={setCfg} design={design} />}
             {tab === 'model' && <ModelPanel cfg={cfg} setCfg={setCfg} />}
             <div className="pane-foot">
               <button

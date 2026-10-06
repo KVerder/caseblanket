@@ -21,6 +21,8 @@ import {
   type Vec3,
 } from './geometry';
 import { tiltMeanGap, type Tilt } from './tilt';
+import { applyFlow, DEEP_PLENUM, type FlowFan } from './flow';
+import { perforation } from '../model/perforation';
 import { allowedFaceDirs, boardStack, isTwoLayer, type ItemDef, type ItemKind, type LayerId, type Profile } from './items';
 import { interiorThickness, type PackNode } from './pack';
 import type { WrapMetrics } from './shrinkwrap';
@@ -40,6 +42,10 @@ export interface DesignRecipe {
   control: { quiet: boolean; budgetDb: number };
   /** Depth of the fan-to-radiator plenum, mm. */
   plenumMm: number;
+  /** Fans that face a panel, for the flow structures (see flow.ts), and the vents' open ratio and hole size. */
+  flowFans: FlowFan[];
+  openRatio: number;
+  holeD: number;
   exterior: Vec3;
 }
 
@@ -592,7 +598,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     if (dir === 'through') {
       losses.push({ label: 'far vent', zeta: perforatedPlateZeta(vs.openRatio), area: ventAreaFor(p.id, opposite(p.face!)) || coreArea }, ...floorGap(p.id, opposite(p.face!)));
     } else {
-      const plen = cfg.advanced.radPlenumGap + profile.extraGap;
+      const plen = cfg.advanced.radPlenumGap + profile.extraGap + (prefs.flow?.deepPlenums ? DEEP_PLENUM : 0);
       const perim = 2 * (rad.length + rad.width);
       losses.push({ label: 'plenum', zeta: 1, area: Math.min(coreArea, perim * plen * MM2) });
     }
@@ -614,7 +620,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   const caseFanGroup = (p: PlacedPart, dir: 'in' | 'out'): FanGroupInput => {
     const fan = p.fan!;
     const area = fanArea(fan, 1);
-    const plen = cfg.advanced.radPlenumGap + profile.extraGap;
+    const plen = cfg.advanced.radPlenumGap + profile.extraGap + (prefs.flow?.deepPlenums ? DEEP_PLENUM : 0);
     const losses: LossTerm[] = [{ label: 'fan proximity', zeta: prox(p.faceAtWall ? p.faceGap + tiltMeanGap(p.tilt) : 0, fan), area }, ...tiltTurn(p, area)];
     if (p.faceAtWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor(p.id, p.face) }, ...floorGap(p.id, p.face));
     else losses.push({ label: 'blocked face', zeta: 40, area });
@@ -650,7 +656,50 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   // Heat paths depend only on the load and the radiator directions: build each set once.
   const netCache = new Map<string, { net: ReturnType<typeof network>; groups0: FanGroupInput[] }>();
   /** The airflow network at a load, radiator directions, chamber layout and fan speeds. */
-  const networkAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null, speeds?: Record<string, number>): NetworkInput => {
+  // Flow structures (Flow tab): the fans that face a panel, and what a bell-mouth, a diffuser or a duct there would be.
+  const flowFans: FlowFan[] = [];
+  {
+    const disc = (centre: Vec3, wall: Dir | undefined, radius: number) => (wall === undefined ? [] : [{ centre, wall, radius }]);
+    if (cooler.kind === 'air-downdraft') {
+      const top = pcbOrigin[2] + bs.surface + bp.socketStack + cooler.height;
+      flowFans.push({
+        id: 'cpu',
+        fan: cooler.fan,
+        count: 1,
+        gap: board.faceGap,
+        atWall: board.faceAtWall && vents.some((v) => v.groupId === 'cpu'),
+        tilted: false,
+        ductable: board.faceAtWall && board.faceGap > 2,
+        discs: disc([pcbOrigin[0] + bp.socketU, pcbOrigin[1] + bp.socketV, top], board.face, Math.min(cooler.fan.size, cooler.width, cooler.depth) / 2),
+      });
+    }
+    if (gpuSpec.cardFan) flowFans.push({ id: 'gpu-card', fan: gpuSpec.cardFanSpec, count: 1, gap: gpu.faceGap, atWall: gpu.faceAtWall && vents.some((v) => v.groupId === 'gpu'), tilted: false, ductable: gpu.faceAtWall && gpu.faceGap > 2, discs: [] });
+    if (psuSpec.fanOn === 'face') {
+      const [L, W, H] = psu.size;
+      flowFans.push({
+        id: 'psu',
+        fan: psuSpec.fan,
+        count: 1,
+        gap: psu.faceGap,
+        atWall: psu.faceAtWall,
+        tilted: false,
+        ductable: psu.faceAtWall && psu.faceGap > 2,
+        discs: disc(localToWorld(psu.frame, psu.body, [L / 2, W / 2, H]), psu.face, Math.min(L, W) / 2 - 6),
+      });
+    }
+    for (const p of [...radParts, ...fanParts]) {
+      const fan = p.fan!;
+      const n = p.kind === 'case-fan' ? 1 : (p.fanCount ?? 1);
+      const [len, wid, thick] = p.size;
+      const start = (len - n * fan.size) / 2;
+      const discs = p.tilt || p.face === undefined ? [] : Array.from({ length: n }, (_, i) => ({ centre: localToWorld(p.frame, p.body, [start + fan.size * (i + 0.5), wid / 2, thick]), wall: p.face!, radius: Math.min(fan.size, wid) / 2 - 2 }));
+      flowFans.push({ id: p.id, fan, count: n, gap: p.faceGap + tiltMeanGap(p.tilt), atWall: p.faceAtWall, tilted: !!p.tilt, ductable: p.faceAtWall && p.mode !== 'through' && p.faceGap > 2 && !p.tilt, discs });
+    }
+  }
+  const holeD = perforation(vs.id).size;
+  const networkAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null, speeds?: Record<string, number>): NetworkInput =>
+    applyFlow(networkRaw(profileId, dirs, layout, speeds), prefs.flow, flowFans, vs.openRatio, holeD);
+  const networkRaw = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null, speeds?: Record<string, number>): NetworkInput => {
     const key = `${profileId}|${dirs.join(',')}`;
     let cached = netCache.get(key);
     if (!cached) {
@@ -893,7 +942,10 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       ventOpenM2: Object.fromEntries(acoustic[loadId].flow.groups.map((g) => [g.id, ventAreaFor(g.id === 'gpu-card' ? 'gpu' : g.id) * vs.openRatio])),
       passiveOpenM2: passiveArea * MM2 * vs.openRatio,
       control: { quiet: prefs.noiseMode === 'quiet', budgetDb: prefs.noiseBudgetDb ?? 30 },
-      plenumMm: cfg.advanced.radPlenumGap + profile.extraGap,
+      plenumMm: cfg.advanced.radPlenumGap + profile.extraGap + (prefs.flow?.deepPlenums ? DEEP_PLENUM : 0),
+      flowFans,
+      openRatio: vs.openRatio,
+      holeD,
       exterior,
     },
     chamber,

@@ -2,6 +2,8 @@ import type { DesignConfig } from '../model/types';
 import type { Design } from '../solver/evaluate';
 import { axisOf, signOf, wallAxes, type Box, type Vec3 } from '../solver/geometry';
 import { partLocal, TILT_PLATE } from '../solver/tilt';
+import { fanRings, FLOW_WALL, HOLE_ROUND } from '../solver/flow';
+import { ductCandidates, ductGap, ductPlates } from '../cfd/scene';
 import { isSculpt, meshGrid, shellBounds, shellField, VENT_MAX_TILT, type Grid, type ShellMesh } from '../solver/shrinkwrap';
 import { PARTITION_THICKNESS } from '../solver/chambers';
 import { plateMesh } from '../solver/partitions';
@@ -172,10 +174,14 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
   };
   type WallMap = ReturnType<typeof wallMap>;
   const MAX_SLOPE = Math.tan((VENT_MAX_TILT * Math.PI) / 180);
+  // Rounded vent holes: a chamfer on the side the air comes in (outside for intakes, inside for
+  // exhausts, both for passive vents, which breathe either way).
+  const round = cfg.prefs.flow?.roundedHoles ? HOLE_ROUND : 0;
   const cuts = design.vents.map((v) => {
     const a = axisOf(v.wall);
     const [xa, ya] = wallAxes(a);
-    return { a, xa, ya, s: signOf(v.wall), rect: v.rect, solidCut: v.kind === 'io' || v.kind === 'bracket', map: null as null | WallMap };
+    const entry: 'out' | 'in' | 'both' = v.flow === 'in' ? 'out' : v.flow === 'out' ? 'in' : 'both';
+    return { a, xa, ya, s: signOf(v.wall), rect: v.rect, solidCut: v.kind === 'io' || v.kind === 'bracket', map: null as null | WallMap, entry };
   });
   /** On the vent's own wall: within the wall band where the map puts that wall (thicker along the axis where the panel slants). */
   const onWall = (m: WallMap, p: Vec3, a: number, x: number, y: number) => {
@@ -190,7 +196,7 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
   for (const o of plan?.openings ?? []) {
     const a = axisOf(o.wall);
     const [xa, ya] = wallAxes(a);
-    cuts.push({ a, xa, ya, s: signOf(o.wall), rect: o.rect, solidCut: true, map: null });
+    cuts.push({ a, xa, ya, s: signOf(o.wall), rect: o.rect, solidCut: true, map: null, entry: 'both' });
   }
   const screws = (plan?.holes ?? []).map((h) => {
     const a = axisOf(h.wall);
@@ -226,8 +232,72 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
         boxSdf(q, { min: [0, W - 3, T - TILT_PLATE], max: [L, W, tf.reach] }),
         boxSdf(q, { min: [L - 3, 0, T - TILT_PLATE], max: [L, W, tf.reach] }),
       );
+      // Radiused turns (Flow tab): a curved fairing filling the corner between the lifted end's
+      // wall and the panel, where the air turns from the vent into the fans. In the frame's own
+      // (x, z) plane: the panel is the line z = T + x·tan(deg), the end wall's inner face x = L − 3.
+      let fillet = Infinity;
+      if (cfg.prefs.flow?.radiusedTurns) {
+        const th = (tf.part.tilt!.deg * Math.PI) / 180;
+        const c = Math.cos(th);
+        const sn = Math.sin(th);
+        const xe = L - 3;
+        const ze = T + xe * Math.tan(th);
+        const Rf = Math.min(30, 0.6 * (ze - T));
+        if (Rf > 3) {
+          const d1 = [0, -1];
+          const d2 = [-c, -sn];
+          const bl = Math.hypot(d1[0] + d2[0], d1[1] + d2[1]);
+          const b = [(d1[0] + d2[0]) / bl, (d1[1] + d2[1]) / bl];
+          const half = Math.acos(Math.max(-1, Math.min(1, sn))) / 2;
+          const C = [xe + (b[0] * Rf) / Math.sin(half), ze + (b[1] * Rf) / Math.sin(half)];
+          const t = Rf / Math.tan(half);
+          const T1 = [xe + d1[0] * t, ze + d1[1] * t];
+          fillet = Math.max(
+            Rf - Math.hypot(q[0] - C[0], q[2] - C[1]),
+            q[0] - xe,
+            (q[2] - T - q[0] * Math.tan(th)) * c,
+            (q[0] - T1[0]) * b[0] + (q[2] - T1[1]) * b[1],
+            -q[1],
+            q[1] - W,
+          );
+        }
+      }
       // Only inside the wall's mid-plane, so it joins the wall and never sticks out of the case.
-      best = Math.min(best, Math.max(Math.min(plate, walls), f + wall / 2));
+      best = Math.min(best, Math.max(Math.min(plate, walls, fillet), f + wall / 2));
+    }
+    return best;
+  };
+  // Flow structures (Flow tab): duct plates, bell-mouths and diffusers, kept inside the shell.
+  const flowSolids: { sdf: (p: Vec3) => number; min: Vec3; max: Vec3 }[] = [];
+  const fl = cfg.prefs.flow;
+  if (fl?.ducts)
+    for (const id of ductCandidates(design)) {
+      const part = design.parts.find((x) => x.id === id)!;
+      // Run the plates on past the interior box to wherever the wall really is (a shrinkwrap or a
+      // sculpted shell can sit further out); the clip at the wall's mid-plane fuses them to it.
+      const a = axisOf(part.face!);
+      const gap = ductGap(design, cfg, part, 0);
+      if (signOf(part.face!) > 0) gap.max[a] += 40;
+      else gap.min[a] -= 40;
+      for (const b of ductPlates(gap, a, FLOW_WALL)) flowSolids.push({ sdf: (q) => boxSdf(q, b), min: b.min, max: b.max });
+    }
+  if (fl?.bellMouths || fl?.diffusers) {
+    const sink = (id: string) => {
+      const g = design.flow.groups.find((x) => x.id === id);
+      return g ? (g.source === 'outside' ? 'in' : g.sink === 'outside' ? 'out' : null) : null;
+    };
+    flowSolids.push(...fanRings(design.recipe.flowFans ?? [], fl, design.interior, sink));
+  }
+  const flowSdf = (p: Vec3, f: number) => {
+    let best = Infinity;
+    for (const s of flowSolids) {
+      let out = 0;
+      for (let a = 0; a < 3; a++) out = Math.max(out, s.min[a] - p[a], p[a] - s.max[a]);
+      if (out > 3) {
+        best = Math.min(best, out);
+        continue;
+      }
+      best = Math.min(best, Math.max(s.sdf(p), f + wall / 2));
     }
     return best;
   };
@@ -235,7 +305,7 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
     const f = F(p);
     // Band between the outer surface and one wall in.
     let d = Math.abs(f + wall / 2) - wall / 2;
-    const tframe = frames.length ? frameSdf(p, f) : Infinity;
+    const tframe = Math.min(frames.length ? frameSdf(p, f) : Infinity, flowSolids.length ? flowSdf(p, f) : Infinity);
     // Bulkhead plates (fused to the wall), with their own holes and opening.
     let plate = Infinity;
     for (const b of bulk) {
@@ -271,7 +341,15 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
         const sl = [[0, 0], [-hx, -hy], [hx, -hy], [-hx, hy], [hx, hy]].map(([dx, dy]) => c.map!.slope(h.cx + dx, h.cy + dy));
         if (sl.some((g) => !g || Math.hypot(g[0], g[1]) > MAX_SLOPE)) continue;
         if (sl.some((g) => Math.hypot(g![0] - sl[0]![0], g![1] - sl[0]![1]) > 0.2)) continue;
-        d = Math.max(d, -h.d);
+        // Chamfer: the hole widens by (round − depth) within `round` of its entry face(s).
+        let widen = 0;
+        if (round > 0) {
+          const fromOuter = -f;
+          const fromInner = f + wall;
+          if (c.entry !== 'in') widen = Math.max(widen, round - fromOuter);
+          if (c.entry !== 'out') widen = Math.max(widen, round - fromInner);
+        }
+        d = Math.max(d, -(h.d - Math.max(0, widen)));
       }
     }
     for (const h of screws) {

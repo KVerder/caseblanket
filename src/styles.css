@@ -1855,3 +1855,61 @@ dialog.print .catalog-foot {
     gap: 2px;
   }
 }
+
+/* ------------------------------------------------------------------ flow tab */
+
+.flow-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.flow-list li {
+  display: grid;
+  gap: 2px;
+}
+.flow-list em {
+  font-style: normal;
+  opacity: 0.85;
+}
+
+/* ------------------------------------------------------------------ funkify */
+
+.funkify {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.funkify p {
+  margin: 0;
+}
+.funk-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.funk-list li {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+}
+
+/* explorer: the other flow-structure setting's frontier */
+.explorer .alt-line {
+  fill: none;
+  stroke: var(--viz-check);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+}
+.explorer .alt-pt {
+  fill: var(--surface);
+  stroke: var(--viz-check);
+  stroke-width: 2;
+}
+.explorer .key.alt {
+  border: 2px dashed var(--viz-check);
+  border-radius: 50%;
+}

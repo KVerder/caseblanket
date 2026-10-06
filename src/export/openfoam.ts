@@ -1,5 +1,7 @@
 import { VENT_STYLES } from '../model/presets';
 import type { DesignConfig } from '../model/types';
+import { HOLE_ROUND, roundedPlateZeta } from '../solver/flow';
+import { perforation } from '../model/perforation';
 import { buildScene, type SceneGeometry } from '../cfd/scene';
 import { floorGapZeta, MMH2O_TO_PA, perforatedPlateZeta } from '../solver/airflow';
 import type { Design } from '../solver/evaluate';
@@ -502,7 +504,8 @@ ${topo
 `,
   );
 
-  const ventZeta = perforatedPlateZeta(vs.openRatio) + (cfg.prefs.dustFilters ? cfg.advanced.dustFilterLossK : 0);
+  const plate = cfg.prefs.flow?.roundedHoles ? roundedPlateZeta(vs.openRatio, HOLE_ROUND / Math.max(1, perforation(vs.id).size)) : perforatedPlateZeta(vs.openRatio);
+  const ventZeta = plate + (cfg.prefs.dustFilters ? cfg.advanced.dustFilterLossK : 0);
   // Starting turbulence: ~1 m/s at 5 % intensity over a 10 mm length scale.
   const k0 = 3.75e-3;
   const om0 = 11;
