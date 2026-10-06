@@ -3,6 +3,7 @@ import type { DesignConfig } from '../model/types';
 import type { Design } from './evaluate';
 import { connectorBox, gpuWrapClearance, hoseBox, hoseDistance, routedPaths, type HosePath } from './hoses';
 import { sculptBounds, sculptField } from './sculpt';
+import { tiltedShapes } from './tilt';
 import { axisOf, signOf, wallAxes, type Box, type Vec3 } from './geometry';
 
 /**
@@ -97,8 +98,23 @@ function wrapShapes(design: Design, cfg: DesignConfig, o: number) {
   const rb = BODY_ROUND * o;
   const rc = CLEAR_ROUND * o;
   const half = (b: Box) => Math.min(...[0, 1, 2].map((a) => (b.max[a] - b.min[a]) / 2));
-  const shapes: { box: Box; r: number }[] = [];
+  const shapes: WrapShape[] = [];
   for (const part of design.parts) {
+    if (part.tilt) {
+      // A tilted part: its own oriented body and clearance, and the frame's wedge to its panel,
+      // not the box around it (the empty corner behind the tilt stays outside the shell).
+      const t = tiltedShapes(part, rb);
+      const tc = tiltedShapes(part, rc);
+      // Bounded by the oriented shapes' own extent (the plenum behind tilted fans can reach past the box around the part).
+      const ext: Box = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+      for (const q of [...t.points, part.clearance.min, part.clearance.max])
+        for (let a = 0; a < 3; a++) {
+          ext.min[a] = Math.min(ext.min[a], q[a]);
+          ext.max[a] = Math.max(ext.max[a], q[a]);
+        }
+      shapes.push({ box: ext, r: 0, sdf: t.body }, { box: ext, r: 0, sdf: tc.clearance }, { box: ext, r: 0, sdf: t.wedge });
+      continue;
+    }
     shapes.push({ box: part.body, r: Math.min(rb, half(part.body)) });
     // The card's connector room is local (the solver reserves the whole edge, the wrap only the plug).
     const clear = part.kind === 'gpu' ? (gpuWrapClearance(design, cfg) ?? part.clearance) : part.clearance;
@@ -204,11 +220,22 @@ function forEachPoint(g: Grid, fn: (p: Vec3, id: number) => void) {
       }
 }
 
-function unionField(shapes: { box: Box; r: number }[], hoses: HosePath[]): Field {
+/** A shape the wrap holds: a rounded box, or any shape (`sdf`) inside the bounding `box`. */
+type WrapShape = { box: Box; r: number; sdf?: Field };
+
+function unionField(shapes: WrapShape[], hoses: HosePath[]): Field {
   const boxes = hoses.map(hoseBox);
   return (q) => {
     let d = Infinity;
-    for (const s of shapes) d = Math.min(d, sdBox(q, s.box, s.r));
+    for (const s of shapes) {
+      if (!s.sdf) {
+        d = Math.min(d, sdBox(q, s.box, s.r));
+        continue;
+      }
+      // Cheap bound first: a shape can't be nearer than its bounding box.
+      const lb = sdBox(q, s.box, 0);
+      if (lb < d) d = Math.min(d, Math.max(lb, s.sdf(q)));
+    }
     for (let i = 0; i < hoses.length; i++) {
       // Cheap bound first: the hose can't be nearer than its bounding box.
       const lb = sdBox(q, boxes[i], 0);

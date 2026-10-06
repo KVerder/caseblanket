@@ -2,6 +2,7 @@ import type { DesignConfig } from '../model/types';
 import type { Design } from './evaluate';
 import type { Box, Vec3 } from './geometry';
 import { routedPaths } from './hoses';
+import { partAxis, tiltedShapes } from './tilt';
 import type { Field } from './shrinkwrap';
 
 /**
@@ -66,7 +67,12 @@ function cubeDirections(k: number): Vec3[] {
 /** Points the inner wall surface must enclose: part and clearance box corners and edge samples, hose points (with their radius). */
 export function envelopePoints(design: Design, cfg: DesignConfig): { p: Vec3; r: number }[] {
   const boxes: Box[] = [];
-  for (const part of design.parts) boxes.push(part.body, part.clearance);
+  const out: { p: Vec3; r: number }[] = [];
+  for (const part of design.parts) {
+    // A tilted part: its own oriented clearance and the frame's wedge, not the box around it.
+    if (part.tilt) for (const p of tiltedShapes(part).points) out.push({ p, r: 0 });
+    else boxes.push(part.body, part.clearance);
+  }
   // The rear I/O plate: the board's and the card's clearance across the back, 20 mm deep.
   const rear = design.parts.filter((p) => p.kind === 'board' || (p.kind === 'gpu' && p.body.min[0] < 2));
   if (rear.length) {
@@ -78,7 +84,6 @@ export function envelopePoints(design: Design, cfg: DesignConfig): { p: Vec3; r:
       }
     boxes.push(b);
   }
-  const out: { p: Vec3; r: number }[] = [];
   const S = 4; // samples per box edge (the inner surface is only nearly convex once normalised)
   for (const b of boxes)
     for (let i = 0; i <= S; i++)
@@ -122,6 +127,16 @@ export function sculptField(design: Design, cfg: DesignConfig): Field {
   const isBack = (n: Vec3) => n[0] < -0.999;
   const isBottom = (n: Vec3) => n[up] < -0.999;
   normals = normals.filter((n) => !isBack(n) && !isBottom(n));
+  // A tilted radiator or fan: panels parallel to its back and to its lifted end, so the shell can
+  // follow the tilt where the corner behind it is empty (bevels alone are all at 45°).
+  for (const part of design.parts) {
+    if (!part.tilt) continue;
+    for (const k of [2, 0] as const) {
+      const e = partAxis(part, k);
+      const n = unit(k === 2 ? [-e[0], -e[1], -e[2]] : e);
+      if (!normals.some((m) => dot(m, n) > 0.999) && !isBack(n) && !isBottom(n)) normals.push(n);
+    }
+  }
   const cut = Math.max(0, Math.min(1, sc.cut));
   const h = normals.map((n) => {
     if (lean && n === lean.n) return support(n) + wall;

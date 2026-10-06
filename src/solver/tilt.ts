@@ -21,6 +21,8 @@ export interface Tilt {
   deg: number;
   /** The part's own size [L, W, T] (T includes the frame plate). */
   size: Vec3;
+  /** Clearances along the part's own axes, mm: below 0 (lo) and past the size (hi) on each. */
+  clear?: { lo: Vec3; hi: Vec3 };
 }
 
 /** Size of the axis-aligned box around a part of `size` tilted by `deg`. */
@@ -92,4 +94,69 @@ export function partAxis(part: Posed, k: 0 | 1 | 2): Vec3 {
 export function tiltMeanGap(tilt: Tilt | undefined): number {
   if (!tilt) return 0;
   return (tilt.size[0] * Math.sin((tilt.deg * Math.PI) / 180)) / 2;
+}
+
+type SdfFn = (p: Vec3) => number;
+
+/** Signed distance to an axis-aligned box rounded by r (negative inside). */
+function sdBox(p: Vec3, min: Vec3, max: Vec3, r = 0): number {
+  let out = 0;
+  let inMax = -Infinity;
+  for (let a = 0; a < 3; a++) {
+    const c = (min[a] + max[a]) / 2;
+    const h = Math.max(0, (max[a] - min[a]) / 2 - r);
+    const q = Math.abs(p[a] - c) - h;
+    if (q > 0) out += q * q;
+    inMax = Math.max(inMax, q);
+  }
+  return Math.sqrt(out) + Math.min(inMax, 0) - r;
+}
+
+/**
+ * What the shell must hold for a tilted part, following the part rather than the box around it:
+ *   body       the part itself, an oriented box in its own coordinates
+ *   clearance  the same with its clearances (plenum behind, port room, tolerance)
+ *   wedge      the frame's wedge between the fans and the panel: the box around the part on the
+ *              panel side of the frame plate (z ≥ T), which the frame closes off
+ * The empty corner of the box behind the tilt is in none of them, so a shrinkwrap or a sculpted
+ * shell slants with the part there. All three are exact distances inside (convex shapes; the
+ * part's coordinates are a rotation of the world's).
+ */
+export function tiltedShapes(part: Posed & { clearance: Box }, round = 0): { body: SdfFn; clearance: SdfFn; wedge: SdfFn; points: Vec3[] } {
+  const tilt = part.tilt!;
+  const [L, W, T] = tilt.size;
+  const lo = tilt.clear?.lo ?? [0, 0, 0];
+  const hi = tilt.clear?.hi ?? [0, 0, 0];
+  const cMin: Vec3 = [-lo[0], -lo[1], -lo[2]];
+  const cMax: Vec3 = [L + hi[0], W + hi[1], T + hi[2]];
+  const body: SdfFn = (p) => sdBox(partLocal(part, p), [0, 0, 0], [L, W, T], Math.min(round, W / 2));
+  const clearance: SdfFn = (p) => sdBox(partLocal(part, p), cMin, cMax, Math.min(round, W / 2));
+  const box = part.clearance;
+  const wedge: SdfFn = (p) => Math.max(sdBox(p, box.min, box.max), T - partLocal(part, p)[2]);
+  // Points for the sculpted shells: the clearance box's edges (sampled), and the wedge's vertices
+  // (the box corners on the panel side of the plate plane, and where that plane cuts the box edges).
+  const points: Vec3[] = [];
+  const S = 4;
+  for (let i = 0; i <= S; i++)
+    for (let j = 0; j <= S; j++)
+      for (let k = 0; k <= S; k++) {
+        if ([i, j, k].filter((x) => x === 0 || x === S).length < 2) continue;
+        points.push(partPoint(part, [cMin[0] + ((cMax[0] - cMin[0]) * i) / S, cMin[1] + ((cMax[1] - cMin[1]) * j) / S, cMin[2] + ((cMax[2] - cMin[2]) * k) / S]));
+      }
+  const z = (p: Vec3) => partLocal(part, p)[2];
+  const corners: Vec3[] = [];
+  for (const x of [box.min[0], box.max[0]]) for (const y of [box.min[1], box.max[1]]) for (const w of [box.min[2], box.max[2]]) corners.push([x, y, w]);
+  for (const c of corners) if (z(c) >= T - 1e-6) points.push(c);
+  for (let a = 0; a < corners.length; a++)
+    for (let b = a + 1; b < corners.length; b++) {
+      const A = corners[a];
+      const B = corners[b];
+      if ([0, 1, 2].filter((q) => A[q] !== B[q]).length !== 1) continue; // box edges only
+      const za = z(A) - T;
+      const zb = z(B) - T;
+      if (za * zb >= 0) continue;
+      const t = za / (za - zb);
+      points.push([A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t, A[2] + (B[2] - A[2]) * t]);
+    }
+  return { body, clearance, wedge, points };
 }

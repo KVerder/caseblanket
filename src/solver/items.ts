@@ -358,6 +358,12 @@ function psuVariants(ctx: BuildContext, layers: LayerId[]): Variant[] {
   return dedupe(out, (v) => `${v.layer}|${v.parts[0].o.ext.join(',')}|${v.parts[0].face}|${sideToWorld(v.parts[0].o.frame, 0)}`);
 }
 
+/** Clearance depths along a part's own axes (side 0/1 = ±e1, 2/3 = ±e2, 4/5 = ±e3). */
+function localClear(clears: Clearance[]): { lo: Vec3; hi: Vec3 } {
+  const d = (side: number) => clears.filter((c) => c.side === side).reduce((m, c) => Math.max(m, c.depth), 0);
+  return { lo: [d(1), d(3), d(5)], hi: [d(0), d(2), d(4)] };
+}
+
 /** Tilt angles to try against a panel (flat only, unless tilting is allowed). */
 function tiltsFor(cfg: DesignConfig): number[] {
   return cfg.prefs.allowTilt === false ? [0] : TILT_ANGLES;
@@ -393,7 +399,7 @@ function radVariants(
         [4],
       );
       for (const deg of through ? [0] : tiltsFor(cfg)) {
-        const tilt: Tilt | undefined = deg > 0 ? { deg, size: [size[0], size[1], size[2] + TILT_PLATE] } : undefined;
+        const tilt: Tilt | undefined = deg > 0 ? { deg, size: [size[0], size[1], size[2] + TILT_PLATE], clear: localClear(clears) } : undefined;
         const o = orient(tilt ? tiltDims(tilt.size, deg) : size, frame, clears);
         out.push(
           makeVariant(
@@ -444,7 +450,7 @@ function caseFanVariants(ctx: BuildContext, fan: FanSpec, layers: LayerId[], all
     const face = sideToWorld(frame, 4);
     if (!allowed.has(face)) continue;
     for (const deg of tiltsFor(cfg)) {
-      const tilt: Tilt | undefined = deg > 0 ? { deg, size: [size[0], size[1], size[2] + TILT_PLATE] } : undefined;
+      const tilt: Tilt | undefined = deg > 0 ? { deg, size: [size[0], size[1], size[2] + TILT_PLATE], clear: localClear(clears) } : undefined;
       const o = orient(tilt ? tiltDims(tilt.size, deg) : size, frame, clears);
       for (const layer of layers) {
         if (!faceAllowed(layer, face)) continue;

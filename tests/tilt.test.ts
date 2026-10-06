@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { defaultConfig } from '../src/model/presets';
 import { solve } from '../src/solver/solve';
 import { buildItems, PROFILES } from '../src/solver/items';
-import { boxToTilt, partAxis, partPoint, tiltDims, tiltToBox, type Tilt } from '../src/solver/tilt';
+import { boxToTilt, partAxis, partPoint, tiltDims, tiltedShapes, tiltToBox, type Tilt } from '../src/solver/tilt';
+import { shellField } from '../src/solver/shrinkwrap';
+import { printPieces } from '../src/print/printable';
 import { buildScene } from '../src/cfd/scene';
 import { mountPlan } from '../src/print/mounts';
 import { DEFAULT_PRINT, wallSolid } from '../src/print/printable';
@@ -81,4 +83,39 @@ describe('tilted radiators and case fans', () => {
     // The side wall reaches from the plate toward the panel near the lifted end.
     expect(solid(partPoint(part, [L - 20, 1.5, T + 5]))).toBeLessThan(0);
   }, 60000);
+
+  it('the shrinkwrap follows a tilted part: the empty corner behind the tilt is outside the case, the part and its frame inside', () => {
+    const c = defaultConfig();
+    c.prefs.shell = 'wrap';
+    const t = tiltedOf(c).filter((x) => !x.invalid).sort((a, b) => b.flow.worstMargin - a.flow.worstMargin)[0];
+    const part = t.parts.find((p) => p.tilt)!;
+    const F = shellField(t, c, c.prefs.organic);
+    const sh = tiltedShapes(part);
+    for (const p of sh.points) expect(F(p)).toBeLessThanOrEqual(-t.wall + 0.6);
+    const [L, W, T] = part.tilt!.size;
+    for (const x of [0, L]) for (const y of [0, W]) for (const z of [0, T]) expect(F(partPoint(part, [x, y, z]))).toBeLessThan(-t.wall);
+    // Corners of the box around the part that neither the part, its clearance, its wedge nor any other part needs.
+    const box = part.clearance;
+    const others = t.parts.filter((p) => p !== part);
+    let empty = 0;
+    for (const x of [box.min[0], box.max[0]])
+      for (const y of [box.min[1], box.max[1]])
+        for (const z of [box.min[2], box.max[2]]) {
+          const q: [number, number, number] = [x, y, z];
+          const inset = q.map((v, a) => v + (v === box.min[a] ? 6 : -6)) as [number, number, number];
+          if (sh.clearance(inset) < 8 || sh.wedge(inset) < 8) continue;
+          if (others.some((o) => [0, 1, 2].every((a) => inset[a] > o.clearance.min[a] - 8 && inset[a] < o.clearance.max[a] + 8))) continue;
+          empty++;
+          expect(F(inset)).toBeGreaterThan(-t.wall);
+        }
+    expect(empty).toBeGreaterThan(0);
+  }, 120000);
+
+  it('a tilted design prints without loose fragments', () => {
+    const c = defaultConfig();
+    c.prefs.shell = 'wrap';
+    const t = tiltedOf(c).filter((x) => !x.invalid).sort((a, b) => b.flow.worstMargin - a.flow.worstMargin)[0];
+    const pieces = printPieces(t, c, DEFAULT_PRINT);
+    expect(pieces.reduce((s, p) => s + (p.dropped ?? 0), 0)).toBe(0);
+  }, 300000);
 });
