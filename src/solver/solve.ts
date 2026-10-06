@@ -130,7 +130,8 @@ export function solve(cfg: DesignConfig, opts: SolveOptions = {}): SolveResult {
   if (isWrap(cfg) && opts.wrapMetrics !== false)
     for (const d of designs) {
       d.wrap = wrapMetrics(d, cfg, cfg.prefs.organic);
-      if (cfg.prefs.organic > 0.02) d.wrap.smoothingL = Math.max(0, d.wrap.volumeL - wrapMetrics(d, cfg, 0).volumeL);
+      // What the smoothness costs, for the best match only (it means meshing the shell twice).
+      if (d === designs[0] && cfg.prefs.shell === 'wrap' && cfg.prefs.organic > 0.02) d.wrap.smoothingL = Math.max(0, d.wrap.volumeL - wrapMetrics(d, cfg, 0).volumeL);
     }
   // The design space: every valid layout, minus exact repeats (same size and thermal result).
   const seen = new Set<string>();

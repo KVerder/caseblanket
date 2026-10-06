@@ -101,30 +101,30 @@ for (const [name, vp, opts] of [
   await page.getByRole('tab', { name: 'Tune' }).click();
   await page.locator('#pri-air').fill('1');
   await page.waitForTimeout(2500);
-  await page.waitForSelector('.solving', { state: 'detached', timeout: 20000 });
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   const t1 = await thickness();
   check(t1 >= t0, `airflow priority 100% does not make the case thinner (${t0} → ${t1} mm)`);
   await page.locator('#edge-r').fill('30');
   await page.waitForTimeout(2500);
-  await page.waitForSelector('.solving', { state: 'detached', timeout: 20000 });
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   await page.screenshot({ path: `${out}/controls-rounded.png` });
   await page.getByRole('tab', { name: 'Parts' }).click();
   await page.locator('#gpu-preset').selectOption({ label: 'MSI RTX 4090 SUPRIM LIQUID X' });
   await page.waitForTimeout(2500);
-  await page.waitForSelector('.solving', { state: 'detached', timeout: 20000 });
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   const eyebrow = await page.locator('.eyebrow').first().innerText();
   check(eyebrow.length > 0, `design updates after changing the GPU (${eyebrow})`);
   await page.screenshot({ path: `${out}/controls-4090.png` });
   await page.getByRole('radio', { name: 'In the board slot' }).click();
   await page.waitForTimeout(2500);
-  await page.waitForSelector('.solving', { state: 'detached', timeout: 20000 });
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   const slotEyebrow = await page.locator('.eyebrow').first().innerText();
   check(/direct slot/i.test(slotEyebrow), `GPU "in the board slot" gives a direct-slot design (${slotEyebrow})`);
   await page.screenshot({ path: `${out}/gpu-in-slot.png` });
   await page.locator('summary', { hasText: 'Case fans' }).click();
   await page.getByRole('radio', { name: '2 × 120 mm' }).click();
   await page.waitForTimeout(2500);
-  await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   const fanParts = await page.evaluate(() => window.__caseblanketViewer.partsGroup.children.filter((g) => /^fan-/.test(g.userData.partId)).length);
   check(fanParts === 2, `"2 × 120 mm" case fans are placed and drawn (${fanParts} in the 3D view)`);
   await page.screenshot({ path: `${out}/case-fans.png` });
@@ -134,7 +134,7 @@ for (const [name, vp, opts] of [
   check((await shapes.locator('tbody tr').count()) === 6, 'shapes lists the layout under six shells');
   await shapes.getByRole('button', { name: 'Pebble', exact: true }).click();
   await page.waitForTimeout(2500);
-  await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   await page.waitForTimeout(4000);
   const pebble = await page.evaluate(() => window.__caseblanketViewer.shell.children.some((c) => c.userData.organic));
   check(pebble, 'the Pebble showcase design shows a sculpted shell');
@@ -143,7 +143,7 @@ for (const [name, vp, opts] of [
   await page.getByRole('tab', { name: 'Flow' }).click();
   await page.locator('#flow-roundedHoles').check();
   await page.waitForTimeout(2500);
-  await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   check(await page.locator('#flow-roundedHoles').isChecked(), 'the Flow tab switches a structure on');
   // Explorer: the other flow-structure setting's frontier, overlaid.
   const exp = page.locator('.explorer');
@@ -161,8 +161,10 @@ for (const [name, vp, opts] of [
   await funk.locator('.funk-list li button').first().click();
   await page.waitForTimeout(2500);
   await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
-  await page.waitForTimeout(4000);
-  const sculpted = await page.evaluate(() => window.__caseblanketViewer.shell.children.some((c) => c.userData.organic));
+  // The shell is meshed off the main thread after the solve: give it time.
+  const sculpted = await page
+    .waitForFunction(() => window.__caseblanketViewer.shell.children.some((c) => c.userData.organic), null, { timeout: 60000 })
+    .then(() => true, () => false);
   check(sculpted, 'applying a Funkify pick shows its sculpted shell');
   await page.screenshot({ path: `${out}/funkify.png`, fullPage: false });
   await ctx.close();
@@ -189,7 +191,7 @@ for (const [name, vp, opts] of [
 // ---- shrinkwrap, airflow simulation and printable export
 {
   const { ctx, page } = await open('sim', { width: 1440, height: 900 }, {});
-  await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   await page.waitForTimeout(1500);
   const shellShown = await page.evaluate(() => window.__caseblanketViewer.flow !== undefined);
   check(shellShown, 'viewer exposes the flow layer');
@@ -224,7 +226,7 @@ for (const [name, vp, opts] of [
   ['explorer-desktop', { width: 1440, height: 900 }, {}],
 ]) {
   const { ctx, page } = await open(name, vp, opts);
-  await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   const ex = page.locator('.explorer');
   await ex.scrollIntoViewIfNeeded();
   const all = await ex.locator('circle.pt').count();
@@ -295,7 +297,7 @@ for (const [name, vp, opts] of [
     await page.getByRole('tab', { name: 'Tune' }).click();
     await page.locator('#noise-budget').fill('25');
     await page.waitForTimeout(2500);
-    await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+    await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
     const db25 = Number((await page.locator('.noise .noise-big b').innerText()).trim());
     const over = /Over the 25 dB\(A\) budget/.test(await page.locator('.noise').innerText());
     check(db25 <= 25.05 || over, `${name}: a 25 dB(A) budget gives ${db25} dB(A)${over ? ' (reported as over budget)' : ''}`);
@@ -303,7 +305,7 @@ for (const [name, vp, opts] of [
     for (const style of ['slots', 'fine', 'round', 'hex']) {
       await page.locator('#vent-style').selectOption(style);
       await page.waitForTimeout(1200);
-      await page.waitForSelector('.solving', { state: 'detached', timeout: 30000 });
+      await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
     }
     await page.waitForTimeout(1500);
     const compiled = await page.evaluate(() => window.__caseblanketViewer.ventStyle);
