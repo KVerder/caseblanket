@@ -46,6 +46,14 @@ export function openShare(p: Perforation): number {
   return area / (p.pitch * p.rowPitch);
 }
 
+/** Hydraulic diameter of one hole (4·area / perimeter), mm: across flats for a hexagon. */
+export function hydraulicDiameter(p: Perforation): number {
+  if (p.kind === 'round' || p.kind === 'hex') return p.size;
+  const L = p.length!;
+  const area = p.size * (L - p.size) + Math.PI * (p.size / 2) ** 2;
+  return (4 * area) / (2 * (L - p.size) + Math.PI * p.size);
+}
+
 /** Half extents of one hole along the row (x) and across it (y), mm. */
 export function holeHalfExtents(p: Perforation): [number, number] {
   if (p.kind === 'round') return [p.size / 2, p.size / 2];

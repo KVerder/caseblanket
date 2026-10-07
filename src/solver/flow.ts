@@ -1,5 +1,6 @@
 import type { FanSpec } from '../model/types';
-import { perforatedPlateZeta, type LossTerm, type NetworkInput } from './airflow';
+import { type LossTerm, type NetworkInput } from './airflow';
+import { hydraulicDiameter, type Perforation } from '../model/perforation';
 import type { Dir, Vec3 } from './geometry';
 
 /**
@@ -9,11 +10,15 @@ import type { Dir, Vec3 } from './geometry';
  * deflectors; rings, cones and hole chamfers are below its ~1 cm grid and act there through the
  * same loss coefficients only where they are porous layers: the vent holes).
  *
- * Coefficients (textbook-style values from memory, not from pages opened in this project):
- *   Rounded vent-hole entries: a sharp-edged perforated plate loses (0.707·(1−φ)^0.375 + 1 − φ)²/φ²
- *     (Idelchik); rounding the entry removes the vena contracta, leaving about (1 − φ)²/φ² + 0.05.
- *     A chamfer of r = HOLE_ROUND on holes of diameter d gets a share min(1, (r/d)/0.15) of that.
- *   Bell-mouth fan inlets: entry loss K 0.5 (sharp) falling with lip radius r/D, table below.
+ * Coefficients (textbook values from memory of Idelchik's Handbook of Hydraulic Resistance and the
+ * usual rounded-entrance tables, not from pages opened in this project):
+ *   Vent panels: Idelchik's thick perforated plate, ζ = [ζ'(1−φ)^0.75 + τ(l/d)(1−φ)^1.375 + (1−φ)²
+ *     + λl/d]/φ² (see plateZeta): a 2.4 mm wall on 4–6 mm holes loses 10–20 % less than a thin plate.
+ *   Rounded vent-hole entries: the hole entry ζ' falls from 0.5 (sharp) with r/d (entryZeta) and the
+ *     contraction term goes with it; the printed 45° chamfer of HOLE_ROUND counts as half that radius.
+ *   Bell-mouth fan inlets: entry loss K 0.5 (sharp) falling with lip radius r/D (same table). The
+ *     fan's rated curve already includes its own frame inlet, so a bell-mouth only wins back the
+ *     proximity loss of a cramped gap, never more.
  *   Exit diffusers: 6° half-angle cone in the fan-to-panel gap, recovery 0.7 × (1 − 1/AR²).
  *   Ducts: the fan-to-vent gap closed by four plates: no proximity loss (the air cannot spill
  *     round the fan), K 0.1 for the short straight duct.
@@ -59,34 +64,86 @@ export const DIFFUSER_HALF_ANGLE = (6 * Math.PI) / 180;
 /** Plenum behind radiators and case fans, extra, mm. */
 export const DEEP_PLENUM = 20;
 
-/** Perforated plate with rounded hole entries (r/d), see above. */
-export function roundedPlateZeta(openRatio: number, rOverD: number): number {
+/**
+ * Idelchik's entrance coefficient ζ' for an inlet edge rounded to r/d, flush with a wall
+ * (Idelchik, Handbook of Hydraulic Resistance, rounded-inlet table; the same values appear in
+ * the usual "rounded entrance" tables: 0.5 sharp, ~0.2 at r/d 0.05, 0.03 from r/d 0.2).
+ * Values from memory of those tables, not re-checked against a page in this project.
+ */
+const ENTRY_ROUND: [number, number][] = [
+  [0, 0.5],
+  [0.01, 0.44],
+  [0.02, 0.37],
+  [0.03, 0.31],
+  [0.04, 0.26],
+  [0.05, 0.22],
+  [0.06, 0.19],
+  [0.08, 0.15],
+  [0.12, 0.09],
+  [0.16, 0.06],
+  [0.2, 0.03],
+];
+function lerpTable(t: [number, number][], x: number): number {
+  if (x <= t[0][0]) return t[0][1];
+  for (let i = 1; i < t.length; i++)
+    if (x <= t[i][0]) {
+      const [x0, y0] = t[i - 1];
+      const [x1, y1] = t[i];
+      return y0 + ((y1 - y0) * (x - x0)) / (x1 - x0);
+    }
+  return t[t.length - 1][1];
+}
+export const entryZeta = (rOverD: number) => lerpTable(ENTRY_ROUND, Math.max(0, rOverD));
+
+/**
+ * Idelchik's τ for a perforated plate of thickness l on holes of hydraulic diameter d: the jet
+ * that contracts at a sharp hole edge partly re-attaches inside a thick plate (τ 1.35 for a thin
+ * plate, falling to ~0.02 at l/d 2). From memory of the "thickened plate" diagram; unverified.
+ */
+const TAU: [number, number][] = [
+  [0, 1.35],
+  [0.2, 1.22],
+  [0.4, 1.1],
+  [0.6, 0.84],
+  [0.8, 0.42],
+  [1, 0.24],
+  [1.4, 0.1],
+  [2, 0.02],
+];
+export const plateTau = (lOverD: number) => lerpTable(TAU, Math.max(0, lOverD));
+
+/** Effective edge radius of a 45° chamfer of leg c: half of it (a judgement, see ventZeta). */
+export const CHAMFER_AS_RADIUS = 0.5;
+
+/**
+ * Loss of a perforated vent panel on its approach (gross) velocity, Idelchik's form
+ *   ζ = [ζ'·(1−φ)^0.75 + τ'·(1−φ)^1.375 + (1−φ)² + λ·l/d] / φ²
+ * with ζ' the hole entry (0.5 sharp, falling with r/d) and τ' = τ(l/d)·(ζ' − 0.03)/0.47 (the contraction
+ * term goes as the edge is rounded; the two ends are Idelchik's sharp thick-plate and rounded-hole
+ * formulas). λ = 0.02. A thin sharp plate (l/d → 0) gives back perforatedPlateZeta within 3 %.
+ * A 45° chamfer of leg c counts as a radius CHAMFER_AS_RADIUS·c: bevelled-inlet data put a short
+ * 45–60° bevel roughly half way between sharp and the same-size radius (judgement, unverified).
+ */
+export function plateZeta(openRatio: number, lOverD: number, rOverD = 0): number {
   const f = Math.min(0.95, Math.max(0.05, openRatio));
-  const sharp = perforatedPlateZeta(f);
-  const round = (1 - f) ** 2 / (f * f) + 0.05;
-  const g = Math.min(1, Math.max(0, rOverD / 0.15));
-  return sharp + (round - sharp) * g;
+  const e = entryZeta(rOverD);
+  const tau = plateTau(lOverD) * Math.max(0, (e - 0.03) / (0.5 - 0.03));
+  return (e * (1 - f) ** 0.75 + tau * (1 - f) ** 1.375 + (1 - f) ** 2 + 0.02 * lOverD) / (f * f);
+}
+
+/** The vent panel's loss for a perforation style, wall thickness and (optional) chamfered hole entries. */
+export function ventZeta(openRatio: number, p: Perforation, wall: number, rounded: boolean): number {
+  const d = hydraulicDiameter(p);
+  return plateZeta(openRatio, wall / d, rounded ? (CHAMFER_AS_RADIUS * HOLE_ROUND) / d : 0);
+}
+
+/** Perforated plate with rounded hole entries (r/d), as a thin plate (kept for the AC-end grille and old callers). */
+export function roundedPlateZeta(openRatio: number, rOverD: number): number {
+  return plateZeta(openRatio, 0, rOverD);
 }
 
 /** Entry loss of a bell-mouth inlet with lip radius r on a fan of diameter D (r/D), K on the fan area. */
-export function bellMouthZeta(rOverD: number): number {
-  const t: [number, number][] = [
-    [0, 0.5],
-    [0.02, 0.28],
-    [0.04, 0.18],
-    [0.06, 0.12],
-    [0.1, 0.07],
-    [0.15, 0.04],
-  ];
-  if (rOverD >= 0.15) return 0.04;
-  for (let i = 1; i < t.length; i++)
-    if (rOverD <= t[i][0]) {
-      const [x0, y0] = t[i - 1];
-      const [x1, y1] = t[i];
-      return y0 + ((y1 - y0) * (rOverD - x0)) / (x1 - x0);
-    }
-  return 0.04;
-}
+export const bellMouthZeta = (rOverD: number) => entryZeta(rOverD);
 
 /** Pressure recovered by a conical diffuser, as a share of the inlet velocity head. */
 export const coneRecovery = (areaRatio: number, efficiency = 0.7) => efficiency * (1 - 1 / (areaRatio * areaRatio));
@@ -123,18 +180,18 @@ export function diffuserRatio(f: FlowFan): number {
  * the passive vents' coefficient, from the vents' open ratio. Recovered pressure never cuts a
  * group's resistance below half (as for the estimated structures).
  */
-export function applyFlow(net: NetworkInput, prefs: Partial<FlowPrefs> | undefined, fans: FlowFan[], openRatio: number, holeD: number): NetworkInput {
+export function applyFlow(net: NetworkInput, prefs: Partial<FlowPrefs> | undefined, fans: FlowFan[], openRatio: number, holeD: number, lOverD = 0): NetworkInput {
   if (!prefs) return net;
   const p = { ...NO_FLOW, ...prefs };
-  const rOverD = HOLE_ROUND / Math.max(1, holeD);
-  const dVent = (phi: number) => (p.roundedHoles ? roundedPlateZeta(phi, rOverD) - perforatedPlateZeta(phi) : 0);
+  const rOverD = (CHAMFER_AS_RADIUS * HOLE_ROUND) / Math.max(1, holeD);
+  const dVent = (phi: number, l = lOverD) => (p.roundedHoles ? plateZeta(phi, l, rOverD) - plateZeta(phi, l, 0) : 0);
   const byId = new Map(fans.map((f) => [f.id, f]));
   const MM2 = 1e-6;
   const groups = net.groups.map((g) => {
     const f = byId.get(g.id);
     let losses: LossTerm[] = g.losses.map((l) => {
       if (VENT_LABELS.has(l.label)) return { ...l, zeta: l.zeta + dVent(openRatio) };
-      if (l.label === 'AC-end grille') return { ...l, zeta: l.zeta + dVent(0.6) };
+      if (l.label === 'AC-end grille') return { ...l, zeta: l.zeta + dVent(0.6, 0) };
       if (p.ducts && f?.ductable && l.label === 'fan proximity') return { ...l, zeta: 0 };
       if (p.radiusedTurns && l.label === 'tilt turn') return { ...l, zeta: l.zeta * 0.3 };
       return l;
@@ -144,7 +201,13 @@ export function applyFlow(net: NetworkInput, prefs: Partial<FlowPrefs> | undefin
     const extra: LossTerm[] = [];
     if (p.ducts && f.ductable) extra.push({ label: 'duct', zeta: DUCT_ZETA, area: fanArea });
     const lip = bellLip(f);
-    if (p.bellMouths && lip > 0 && g.source === 'outside') extra.push({ label: 'bell-mouth', zeta: -(0.5 - bellMouthZeta(lip / f.fan.size)), area: fanArea });
+    // A fan's rated curve already includes its own frame inlet (rated on a plenum chamber), so a
+    // bell-mouth can only win back the extra loss of breathing through a cramped gap: at most the
+    // proximity loss charged, and at most what rounding the entry saves (0.5 → ζ'(r/D)).
+    const prox = g.losses.find((l) => l.label === 'fan proximity');
+    const proxZ = prox && prox.area > 0 ? prox.zeta * (fanArea / prox.area) ** 2 : 0;
+    const bellGain = Math.min(0.5 - bellMouthZeta(lip / f.fan.size), proxZ);
+    if (p.bellMouths && lip > 0 && g.source === 'outside' && bellGain > 0) extra.push({ label: 'bell-mouth', zeta: -bellGain, area: fanArea });
     const ar = diffuserRatio(f);
     if (p.diffusers && ar > 0 && g.sink === 'outside') extra.push({ label: 'diffuser', zeta: -coneRecovery(ar), area: fanArea });
     if (extra.length) {

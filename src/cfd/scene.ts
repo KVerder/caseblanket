@@ -1,11 +1,11 @@
 import { VENT_STYLES } from '../model/presets';
 import type { DesignConfig, FanSpec } from '../model/types';
-import { FLOOR_GAP_ZETA, MMH2O_TO_PA, perforatedPlateZeta } from '../solver/airflow';
+import { FLOOR_GAP_ZETA, MMH2O_TO_PA } from '../solver/airflow';
 import type { Design, PlacedPart } from '../solver/evaluate';
 import { axisOf, dirVec, localBoxToWorld, signOf, wallAxes, type Box, type Dir, type Vec3 } from '../solver/geometry';
 import { boardStack } from '../solver/items';
 import { shellField, VENT_MAX_TILT } from '../solver/shrinkwrap';
-import { HOLE_ROUND, roundedPlateZeta } from '../solver/flow';
+import { ventZeta } from '../solver/flow';
 import { perforation } from '../model/perforation';
 import { partAxis, partLocal, partPoint, TILT_PLATE } from '../solver/tilt';
 import type { Partition } from '../solver/chambers';
@@ -196,7 +196,7 @@ export function buildScene(design: Design, cfg: DesignConfig, shapingIn: Shaping
   const field = shellField(design, cfg, cfg.prefs.organic ?? 0);
   const wall = design.wall;
   const vs = VENT_STYLES.find((v) => v.id === cfg.prefs.ventStyleId) ?? VENT_STYLES[0];
-  const plateZeta = cfg.prefs.flow?.roundedHoles ? roundedPlateZeta(vs.openRatio, HOLE_ROUND / Math.max(1, perforation(vs.id).size)) : perforatedPlateZeta(vs.openRatio);
+  const plateZeta = ventZeta(vs.openRatio, perforation(vs.id), cfg.prefs.wallThickness, !!cfg.prefs.flow?.roundedHoles);
   const ventBeta = betaFor(plateZeta + (cfg.prefs.dustFilters ? cfg.advanced.dustFilterLossK : 0), h);
   const interior: number[] = [];
   const ventCells: number[][] = design.vents.map(() => []);
@@ -371,7 +371,9 @@ export function buildScene(design: Design, cfg: DesignConfig, shapingIn: Shaping
 
   const fanDir = (part: PlacedPart) => {
     const base = part.airflow;
-    if (!shaping.flipped.includes(part.id) || base === 'through') return base;
+    if (!shaping.flipped.includes(part.id)) return base;
+    // A through-flow radiator blows toward its face; reversed, its fans pull the air the other way.
+    if (base === 'through') return part.kind === 'rad-cpu' || part.kind === 'rad-gpu' ? 'in' : base;
     return base === 'in' ? 'out' : base === 'out' ? 'in' : base;
   };
 
@@ -682,7 +684,7 @@ export function ductCandidates(design: Design): string[] {
   return design.parts.filter((p) => p.face !== undefined && p.faceAtWall && p.mode !== 'through' && p.faceGap > 2 && !p.tilt).map((p) => p.id);
 }
 
-/** Radiators and case fans whose direction the optimiser may reverse. */
+/** Radiators (wall or through-flow) and case fans whose direction the optimiser may reverse. */
 export function flipCandidates(design: Design): string[] {
-  return design.parts.filter((p) => (p.kind === 'rad-cpu' || p.kind === 'rad-gpu' || p.kind === 'case-fan') && p.mode === 'wall').map((p) => p.id);
+  return design.parts.filter((p) => p.kind === 'rad-cpu' || p.kind === 'rad-gpu' || (p.kind === 'case-fan' && p.mode === 'wall')).map((p) => p.id);
 }
