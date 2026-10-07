@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CfdThermal } from '../cfd/components';
 import type { DesignConfig, LoadProfileId } from '../model/types';
 import { TOPOLOGY_LABELS, type Design } from '../solver/evaluate';
-import { frontier, rescoreCandidates, sizeOf, type SizeAxis } from '../solver/frontier';
+import { frontier, rescoreCandidates, sizeOf, thermalScheme, type SizeAxis } from '../solver/frontier';
 import { CfdClient } from '../state/cfdClient';
 import { SolverClient } from '../state/solverClient';
 import { ALL_FLOW, NO_FLOW } from '../solver/flow';
@@ -237,7 +237,7 @@ export function Explorer({
 
   const runScore = () => {
     const model = space.filter((d) => d.noise[load].feasible).map((d) => ({ d, id: d.id, size: sizeOf(d, axis), margin: d.flow.worstMargin }));
-    const designs = rescoreCandidates(model, 19).map((p) => p.d);
+    const designs = rescoreCandidates(model, 19, 8, (p) => thermalScheme(p.d)).map((p) => p.d);
     // The selected design itself, even when the design space holds only its duplicate.
     if (!designs.some((d) => d.id === selected.id)) designs.push(selected);
     scoreClient.current ??= new CfdClient();

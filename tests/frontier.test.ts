@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { COOLERS, GPUS, defaultConfig } from '../src/model/presets';
-import { frontier, rescoreCandidates, spacePoints } from '../src/solver/frontier';
+import { frontier, rescoreCandidates, spacePoints, thermalScheme } from '../src/solver/frontier';
 import { solve } from '../src/solver/solve';
 
 describe('design-space frontier', () => {
@@ -67,4 +67,27 @@ describe('3D re-scoring candidates', () => {
     expect(Math.min(...sizes)).toBe(10);
     expect(Math.max(...sizes)).toBeGreaterThanOrEqual(36);
   });
+});
+
+describe('3D re-scoring samples every flow scheme', () => {
+  it('adds the best design of a scheme the size bands would miss', () => {
+    // 40 designs of scheme A that beat every scheme-B design in the model, all the same size.
+    const pts = [
+      ...Array.from({ length: 40 }, (_, i) => ({ id: `a${i}`, size: 20, margin: 0.5 + i / 1000, s: 'A' })),
+      ...Array.from({ length: 5 }, (_, i) => ({ id: `b${i}`, size: 20, margin: 0.3 + i / 100, s: 'B' })),
+    ];
+    expect(rescoreCandidates(pts, 6).some((p) => p.s === 'B')).toBe(false);
+    const pick = rescoreCandidates(pts, 6, 8, (p) => p.s);
+    expect(pick.map((p) => p.id)).toContain('b4');
+    expect(pick.length).toBe(6);
+  });
+  it('tells radiator direction, tilt and case-fan directions apart', () => {
+    const cfg = defaultConfig();
+    cfg.prefs.airflowPriority = 1;
+    cfg.parts.caseFans.count = 2;
+    const r = solve(cfg, { wrapMetrics: false });
+    const schemes = new Set(r.space.map(thermalScheme));
+    expect(schemes.size).toBeGreaterThan(5);
+    for (const s of schemes) expect(s).toMatch(/^(flat|sandwich|direct) .*fans \din \dout$/);
+  }, 120000);
 });
