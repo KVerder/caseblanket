@@ -205,6 +205,9 @@ for (const [name, vp, opts] of [
   await page.waitForTimeout(1500);
   const shellShown = await page.evaluate(() => window.__caseblanketViewer.flow !== undefined);
   check(shellShown, 'viewer exposes the flow layer');
+  await page.locator('#sim-cell').selectOption('20');
+  const cellNote = await page.locator('#sim-cell-note').innerText();
+  check(/^20 mm cells/.test(cellNote), `the simulation's cell size is the user's choice (${cellNote.slice(0, 40)}…)`);
   await page.getByRole('button', { name: 'Simulate airflow' }).click();
   await page.waitForSelector('section.sim .sim-table', { timeout: 60000 });
   await page.waitForTimeout(2000);

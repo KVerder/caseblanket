@@ -5,9 +5,10 @@ import { optimiseShaping, simulate, simulateSteady } from './run';
 import type { CfdThermal } from './components';
 import { NO_SHAPING, type Shaping } from './scene';
 
+/** `cell`: the cell size the user picked, mm (otherwise each kind of run picks its own). */
 type Req =
-  | { id: number; kind: 'simulate'; design: Design; cfg: DesignConfig; shaping: Shaping }
-  | { id: number; kind: 'optimise'; design: Design; cfg: DesignConfig }
+  | { id: number; kind: 'simulate'; design: Design; cfg: DesignConfig; shaping: Shaping; cell?: number }
+  | { id: number; kind: 'optimise'; design: Design; cfg: DesignConfig; cell?: number }
   | { id: number; kind: 'check'; designs: Design[]; cfg: DesignConfig };
 
 const post = (msg: unknown, transfer: Transferable[] = []) => (self as DedicatedWorkerGlobalScope).postMessage(msg, transfer);
@@ -18,6 +19,7 @@ self.onmessage = (e: MessageEvent<Req>) => {
     if (req.kind === 'simulate') {
       simulate(req.design, req.cfg, req.shaping, {
         cells: 20000,
+        cell: req.cell,
         seconds: 2.2,
         every: 8,
         frame: (f) => post({ id: req.id, frame: f }, [f.vel.buffer, f.T.buffer]),
@@ -33,7 +35,7 @@ self.onmessage = (e: MessageEvent<Req>) => {
       });
       post({ id: req.id, checks: out });
     } else {
-      const result = optimiseShaping(req.design, req.cfg, (done, total, label) => post({ id: req.id, progress: { done, total, label } }));
+      const result = optimiseShaping(req.design, req.cfg, (done, total, label) => post({ id: req.id, progress: { done, total, label } }), req.cell);
       post({ id: req.id, result });
     }
   } catch (err) {

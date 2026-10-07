@@ -34,6 +34,8 @@ const SWIRL = 0.35;
 export interface SceneOptions {
   /** Target cell count; the cell size follows from it. */
   cells?: number;
+  /** Cell size, mm: overrides `cells` (the user's choice in the simulation panel). */
+  cell?: number;
   margin?: number;
 }
 
@@ -86,7 +88,7 @@ export function buildScene(design: Design, cfg: DesignConfig, shapingIn: Shaping
   const margin = opts.margin ?? 60;
   const target = opts.cells ?? 45000;
   const span: Vec3 = [design.interior[0] + 2 * margin, design.interior[1] + 2 * margin, design.interior[2] + 2 * margin];
-  const h = Math.max(6, Math.cbrt((span[0] * span[1] * span[2]) / target));
+  const h = opts.cell ?? Math.max(6, Math.cbrt((span[0] * span[1] * span[2]) / target));
   // The case stands on a desk or floor: one solid layer of cells under its feet, no room air below.
   // The gap under the shell is at least one cell; when the real feet are shorter, the extra
   // contraction is added as drag where air crosses the edge of the footprint (below).
@@ -517,7 +519,18 @@ export function buildScene(design: Design, cfg: DesignConfig, shapingIn: Shaping
     : cfg.parts.board.heatW +
       cfg.parts.extras.reduce((sum, e) => sum + e.heatW, 0) +
       (gpuSpec.cardFan ? 0 : gpuSpec.boardPowerW * (1 - (gpuSpec.cooling === 'aio' ? gpuSpec.radiatorHeatShare : 0)));
-  heat.push({ id: 'board', label: 'Board (VRM, RAM, SSD)', cells: Int32Array.from(boardHeatCells.filter((c) => cellType[c] !== CELL_SOLID)), watts: internal });
+  // On a coarse grid the 15 mm layer above the board can fall into the board's own (fattened) solid
+  // cell, or under a part: then the heat goes into the first open layer above it, never nowhere.
+  let boardCells = boardHeatCells.filter((c) => cellType[c] !== CELL_SOLID);
+  const board = design.parts.find((p) => p.kind === 'board');
+  if (board && boardCells.length < 4) {
+    const o: Vec3 = [board.body.min[0], board.body.min[1] + bs.pcbDv, board.body.min[2]];
+    for (let lift = 1; lift <= 6 && boardCells.length < 4; lift++) {
+      const z0 = o[2] + bs.surface + lift * h;
+      boardCells = cellsIn({ min: [o[0], o[1], z0], max: [o[0] + bp.depth, o[1] + bp.edge, z0 + 1] }).filter((c) => cellType[c] !== CELL_SOLID && !wallCell[c] && fieldVals[c] < 0);
+    }
+  }
+  heat.push({ id: 'board', label: 'Board (VRM, RAM, SSD)', cells: Int32Array.from(boardCells), watts: internal });
 
   // ------------------------------------------------ internal partitions (solid plates in the gaps)
   const cuts = [...(shaping.noChambers ? [] : (design.chamber?.cuts ?? [])), ...(shaping.partitions ?? [])];

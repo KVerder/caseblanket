@@ -69,12 +69,13 @@ export class CfdClient {
     this.worker.postMessage({ id, ...msg });
   }
 
-  simulate(design: Design, cfg: DesignConfig, shaping: Shaping, h: Handlers) {
-    this.start({ kind: 'simulate', design, cfg, shaping }, h);
+  /** `cell`: grid cell size in mm, or undefined for the run's own default. */
+  simulate(design: Design, cfg: DesignConfig, shaping: Shaping, h: Handlers, cell?: number) {
+    this.start({ kind: 'simulate', design, cfg, shaping, cell }, h);
   }
 
-  optimise(design: Design, cfg: DesignConfig, h: Handlers) {
-    this.start({ kind: 'optimise', design, cfg }, h);
+  optimise(design: Design, cfg: DesignConfig, h: Handlers, cell?: number) {
+    this.start({ kind: 'optimise', design, cfg, cell }, h);
   }
 
   /** Short 3D runs of several designs; reports each one's component temperatures. */

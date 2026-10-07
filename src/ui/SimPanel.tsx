@@ -7,10 +7,27 @@ import type { DesignConfig } from '../model/types';
 import type { CaseViewer } from '../render/Viewer';
 import type { Design } from '../solver/evaluate';
 import { CfdClient } from '../state/cfdClient';
+import { Select } from './fields';
 
 type Status = { kind: 'idle' } | { kind: 'running'; simSeconds: number } | { kind: 'done' } | { kind: 'error'; text: string };
 
 const f1 = (x: number) => (x >= 0 ? '+' : '') + x.toFixed(1);
+
+/** Cell sizes offered, mm (0 = each run's own default). */
+const CELL_SIZES = [0, 20, 15, 12, 10, 8, 6, 5, 4];
+const CELL_KEY = 'caseblanket.simCell';
+/** The simulated box: the interior and 60 mm of room air around it. */
+const simVolume = (d: Design) => (d.interior[0] + 120) * (d.interior[1] + 120) * (d.interior[2] + 120);
+/** The default live run's cell size, mm (as the scene picks it for 20 000 cells). */
+const autoCell = (d: Design) => Math.max(6, Math.cbrt(simVolume(d) / 20000));
+function storedCell(): number {
+  try {
+    const v = Number(localStorage.getItem(CELL_KEY));
+    return CELL_SIZES.includes(v) ? v : 0;
+  } catch {
+    return 0;
+  }
+}
 const pct = (m: number) => `${Math.round(m * 100)} %`;
 
 /** Live airflow simulation of the selected design, and the flow-shaping optimiser. */
@@ -26,6 +43,12 @@ export function SimPanel({ design, cfg, viewer }: { design: Design; cfg: DesignC
     result: null,
   });
   const [shaping, setShaping] = useState<Shaping | null>(null);
+  const [cellMm, setCellMm] = useState<number>(storedCell);
+  const cell = cellMm || undefined;
+  const hNow = cellMm || autoCell(design);
+  const cellCount = simVolume(design) / hNow ** 3;
+  // Work grows with the cells and with the steps (the time step shrinks with the cell): about h⁻⁴.
+  const cost = (autoCell(design) / hNow) ** 4;
 
   // A new design (or new settings) invalidates every simulation result.
   useEffect(() => {
@@ -48,7 +71,7 @@ export function SimPanel({ design, cfg, viewer }: { design: Design; cfg: DesignC
         setStatus(f.done ? { kind: 'done' } : { kind: 'running', simSeconds: f.stats.time });
       },
       error: (text) => setStatus({ kind: 'error', text }),
-    });
+    }, cell);
   };
 
   const optimise = () => {
@@ -64,7 +87,7 @@ export function SimPanel({ design, cfg, viewer }: { design: Design; cfg: DesignC
         run(s);
       },
       error: (text) => setOpt((o) => ({ ...o, running: false, error: text })),
-    });
+    }, cell);
   };
 
   const stop = () => {
@@ -83,8 +106,30 @@ export function SimPanel({ design, cfg, viewer }: { design: Design; cfg: DesignC
         <span className="muted small">3D, coarse</span>
       </div>
       <p className="muted small">
-        Simulates the air in and around the case on a ~1 cm grid: fans push along their fan curves, radiators and panels resist, heat rides
-        with the air. The 3D view shows it as moving streaks coloured from room temperature (blue) to hot (red).
+        Simulates the air in and around the case on a grid of cubic cells: fans push along their fan curves, radiators and panels resist, heat
+        rides with the air. The 3D view shows it as moving streaks coloured from room temperature (blue) to hot (red).
+      </p>
+      <Select
+        id="sim-cell"
+        label="Grid cell size"
+        value={String(cellMm)}
+        options={CELL_SIZES.map((c) => ({ value: String(c), label: c ? `${c} mm` : `Auto (${Math.round(autoCell(design))} mm live, coarser to shape)` }))}
+        onChange={(v) => {
+          const n = Number(v);
+          setCellMm(n);
+          try {
+            localStorage.setItem(CELL_KEY, String(n));
+          } catch {
+            /* private window: not remembered */
+          }
+        }}
+      />
+      <p className="muted small" id="sim-cell-note">
+        {Math.round(hNow)} mm cells: about {cellCount >= 1e6 ? `${(cellCount / 1e6).toFixed(1)} million` : `${Math.max(1, Math.round(cellCount / 1000))} 000`} cells
+        {cellMm ? `, roughly ${cost >= 10 ? Math.round(cost) : cost.toFixed(1)}× the work of Auto per simulated second` : ''}. Finer cells resolve narrower gaps
+        and jets (a gap needs about two cells to carry air) but take longer
+        {cellMm && cellCount > 1.5e6 ? '; this many cells may run out of memory in a browser tab' : ''}. Shape the airflow runs each option with this size too
+        (Auto uses coarser cells there).
       </p>
       <div className="row-actions wrap">
         {!running ? (
@@ -221,7 +266,7 @@ export function SimPanel({ design, cfg, viewer }: { design: Design; cfg: DesignC
         </div>
       )}
       <p className="muted small">
-        Coarse model: cells are about {Math.round(Math.cbrt(((design.interior[0] + 120) * (design.interior[1] + 120) * (design.interior[2] + 120)) / 20000))} mm, so fan
+        Coarse model: cells are {Math.round(hNow)} mm, so fan
         blades, fin passages, boundary layers and turbulence are not resolved. Fans are pressure jumps on their rated curves and
         radiators, fins and grilles are porous blocks; on test ducts this matches the fan-curve model within 2 % and changes under 1 %
         when the grid is halved. Use it to compare options, not as a measurement.

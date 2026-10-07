@@ -18,8 +18,8 @@ export interface SimFrame {
 }
 
 /** Steps a design's flow, calling `frame` every `every` steps. */
-export function simulate(design: Design, cfg: DesignConfig, shaping: Shaping, opts: { cells?: number; seconds?: number; every?: number; frame?: (f: SimFrame) => void }) {
-  const scene = buildScene(design, cfg, shaping, { cells: opts.cells });
+export function simulate(design: Design, cfg: DesignConfig, shaping: Shaping, opts: { cells?: number; cell?: number; seconds?: number; every?: number; frame?: (f: SimFrame) => void }) {
+  const scene = buildScene(design, cfg, shaping, { cells: opts.cells, cell: opts.cell });
   const sim = new FlowSolver(scene);
   const dt = sim.suggestDt();
   const steps = Math.ceil((opts.seconds ?? 2.5) / dt);
@@ -42,8 +42,8 @@ export function simulate(design: Design, cfg: DesignConfig, shaping: Shaping, op
  * (or at `maxSeconds`). Poorly ventilated cases take several seconds to heat up; well ventilated
  * ones settle in about one.
  */
-export function simulateSteady(design: Design, cfg: DesignConfig, shaping: Shaping, opts: { cells?: number; minSeconds?: number; maxSeconds?: number; tolK?: number } = {}) {
-  const scene = buildScene(design, cfg, shaping, { cells: opts.cells });
+export function simulateSteady(design: Design, cfg: DesignConfig, shaping: Shaping, opts: { cells?: number; cell?: number; minSeconds?: number; maxSeconds?: number; tolK?: number } = {}) {
+  const scene = buildScene(design, cfg, shaping, { cells: opts.cells, cell: opts.cell });
   const sim = new FlowSolver(scene);
   const dt = sim.suggestDt();
   const minS = opts.minSeconds ?? 1.4;
@@ -110,9 +110,9 @@ export const UNRESOLVED_STRUCTURES = [
  * tightest part's margin by more than STRUCTURE_MIN_GAIN; the design's own walls are dropped
  * when removing them costs less than that.
  */
-export function optimiseShaping(design: Design, cfg: DesignConfig, progress?: (done: number, total: number, label: string) => void): ShapingResult {
+export function optimiseShaping(design: Design, cfg: DesignConfig, progress?: (done: number, total: number, label: string) => void, cell?: number): ShapingResult {
   // Each option run until its temperatures settle, so slow-heating layouts are compared at steady state.
-  const quick = (s: Shaping) => simulateSteady(design, cfg, s, { cells: 9000, minSeconds: 1.4, maxSeconds: 8 }).stats;
+  const quick = (s: Shaping) => simulateSteady(design, cfg, s, { cells: 9000, cell, minSeconds: 1.4, maxSeconds: 8 }).stats;
   const mat = MATERIALS.find((m) => m.id === cfg.prefs.materialId) ?? MATERIALS[0];
   const candidates: { label: string; kind: ShapingStep['kind']; weightKg: number; apply: (s: Shaping) => Shaping }[] = [];
   for (const l of louvreCandidates(design)) {
