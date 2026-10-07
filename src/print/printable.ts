@@ -212,7 +212,12 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
     const [xa, ya] = wallAxes(b.axis);
     return { ...b, xa, ya };
   });
-  const frames = (plan?.tiltFrames ?? []).map((tf) => ({ ...tf, reach: tf.part.tilt!.size[2] + tf.part.tilt!.size[0] }));
+  // The frame's walls run from the plate out to the panel; moulded (shrinkwrap mode), only across the
+  // fans' wall gap to the skin, which runs along the fans.
+  const frames = (plan?.tiltFrames ?? []).map((tf) => {
+    const t = tf.part.tilt!;
+    return { ...tf, reach: cfg.prefs.mold ? t.size[2] + (t.clear?.hi[2] ?? 0) + 2 * wall + 6 : t.size[2] + t.size[0] };
+  });
   /** Tilted parts' wedge frames (their own coordinates), kept inside the shell so they fuse to the wall. */
   const frameSdf = (p: Vec3, f: number) => {
     let best = Infinity;
@@ -236,7 +241,8 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
       // wall and the panel, where the air turns from the vent into the fans. In the frame's own
       // (x, z) plane: the panel is the line z = T + x·tan(deg), the end wall's inner face x = L − 3.
       let fillet = Infinity;
-      if (cfg.prefs.flow?.radiusedTurns) {
+      // Moulded (shrinkwrap mode): the skin runs along the fans, so there is no turn to fair.
+      if (cfg.prefs.flow?.radiusedTurns && !cfg.prefs.mold) {
         const th = (tf.part.tilt!.deg * Math.PI) / 180;
         const c = Math.cos(th);
         const sn = Math.sin(th);
@@ -336,10 +342,18 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
         // Whole holes only: inside the vent with a border, clear of screws and joints, on flat wall.
         if (h.cx - hx < R.x0 + 1.5 || h.cx + hx > R.x1 - 1.5 || h.cy - hy < R.y0 + 1.5 || h.cy + hy > R.y1 - 1.5) continue;
         if (keep.some((k) => k.a === c.a && k.s === c.s && Math.hypot(h.cx - k.x, h.cy - k.y) < k.r + hr)) continue;
-        if (joints.some((j) => (j.axis === c.xa && Math.abs(j.at - h.cx) < hx + JOINT_CLEAR) || (j.axis === c.ya && Math.abs(j.at - h.cy) < hy + JOINT_CLEAR))) continue;
         // On a flat-enough panel: within 50° of the vent's wall, and the slope about the same across the hole.
         const sl = [[0, 0], [-hx, -hy], [hx, -hy], [-hx, hy], [hx, hy]].map(([dx, dy]) => c.map!.slope(h.cx + dx, h.cy + dy));
         if (sl.some((g) => !g || Math.hypot(g[0], g[1]) > MAX_SLOPE)) continue;
+        // Clear of joints; on a slanted panel the cut meets the wall obliquely, so by its slant over the wall's depth too.
+        const [gx, gy] = sl[0]!;
+        if (joints.some((j) => (j.axis === c.xa && Math.abs(j.at - h.cx) < hx + JOINT_CLEAR + wall * Math.abs(gx)) || (j.axis === c.ya && Math.abs(j.at - h.cy) < hy + JOINT_CLEAR + wall * Math.abs(gy)))) continue;
+        // A joint across the wall's own axis cuts a slanted wall along a line: no hole within reach of it.
+        if (joints.some((j) => j.axis === c.a)) {
+          const ps = [[0, 0], [-hx, -hy], [hx, -hy], [-hx, hy], [hx, hy]].map(([dx, dy]) => c.map!.pos(h.cx + dx, h.cy + dy));
+          const reach = wall + JOINT_CLEAR;
+          if (joints.some((j) => j.axis === c.a && ps.some((q) => Math.abs(j.at - q) < reach) || (j.axis === c.a && Math.min(...ps) < j.at && Math.max(...ps) > j.at))) continue;
+        }
         if (sl.some((g) => Math.hypot(g![0] - sl[0]![0], g![1] - sl[0]![1]) > 0.2)) continue;
         // Chamfer: the hole widens by (round − depth) within `round` of its entry face(s).
         let widen = 0;
@@ -365,7 +379,7 @@ export function wallSolid(design: Design, cfg: DesignConfig, opt: PrintOptions, 
 }
 
 /** Split the shell's bounds into a grid of pieces no larger than the bed allows. */
-export function planPieces(design: Design, opt: PrintOptions, bounds?: Box): Box[] {
+export function planPieces(design: Design, opt: PrintOptions, bounds?: Box, field?: (p: Vec3) => number): Box[] {
   const pad = design.wall + 14;
   // Sculpted shells reach past the interior box: split their measured bounds instead.
   const lo: Vec3 = bounds ? ([...bounds.min] as Vec3) : [-pad, -pad, -pad];
@@ -373,6 +387,56 @@ export function planPieces(design: Design, opt: PrintOptions, bounds?: Box): Box
   // Pieces may be rotated on the bed, so size them by the smallest bed dimension (less a margin).
   const max = Math.min(...opt.bed) - 8;
   const counts = [0, 1, 2].map((a) => Math.max(1, Math.ceil((hi[a] - lo[a]) / max)));
+  // Cut positions along each axis: evenly spaced, then (given the shell's field) each nudged within
+  // the slack the bed leaves to where it grazes the least wall. A cut running almost along a wall
+  // (a slanted skin) leaves slivers too thin to print where it crosses the wall; one inside a wall
+  // parallel to it splits that wall into thin sheets.
+  const cuts = [0, 1, 2].map((a) => {
+    const step = (hi[a] - lo[a]) / counts[a];
+    const xs = Array.from({ length: counts[a] + 1 }, (_, i) => lo[a] + i * step);
+    if (!field || counts[a] < 2) return xs;
+    const slack = Math.min(30, (max - step) / 2);
+    const [b1, b2] = [0, 1, 2].filter((x) => x !== a);
+    const grazing = (at: number) => {
+      let n = 0;
+      const q: Vec3 = [0, 0, 0];
+      for (let u = lo[b1]; u <= hi[b1]; u += 4)
+        for (let v = lo[b2]; v <= hi[b2]; v += 4) {
+          q[a] = at;
+          q[b1] = u;
+          q[b2] = v;
+          const f = field(q);
+          if (Math.abs(f + design.wall / 2) > design.wall) continue;
+          const g = [0, 1, 2].map((k) => {
+            const e = [...q] as Vec3;
+            e[k] += 0.5;
+            return field(e) - f;
+          });
+          const gl = Math.hypot(g[0], g[1], g[2]);
+          // Grazing a wall that runs across the cut, or lying inside one that runs along it (worse: a thin sheet).
+          if (Math.abs(g[a]) < 0.4 * gl) n++;
+          else if (Math.abs(g[a]) > 0.8 * gl) n += 4;
+        }
+      return n;
+    };
+    for (let i = 1; i < counts[a]; i++) {
+      let best = xs[i];
+      const evenN = grazing(best);
+      // Even cuts that graze no real stretch of wall stay put (moving them only trades one joint for another).
+      if (evenN < 20) continue;
+      let bestN = evenN;
+      for (let d = -slack; d <= slack && bestN > 0; d += 3) {
+        const at = lo[a] + i * step + d;
+        const n = grazing(at);
+        if (n < bestN || (n === bestN && Math.abs(d) < Math.abs(best - lo[a] - i * step))) {
+          best = at;
+          bestN = n;
+        }
+      }
+      xs[i] = best;
+    }
+    return xs;
+  });
   const pieces: Box[] = [];
   for (let i = 0; i < counts[0]; i++)
     for (let j = 0; j < counts[1]; j++)
@@ -380,9 +444,8 @@ export function planPieces(design: Design, opt: PrintOptions, bounds?: Box): Box
         const ijk = [i, j, k];
         const b: Box = { min: [0, 0, 0], max: [0, 0, 0] };
         for (let a = 0; a < 3; a++) {
-          const step = (hi[a] - lo[a]) / counts[a];
-          b.min[a] = lo[a] + ijk[a] * step;
-          b.max[a] = lo[a] + (ijk[a] + 1) * step;
+          b.min[a] = cuts[a][ijk[a]];
+          b.max[a] = cuts[a][ijk[a] + 1];
         }
         pieces.push(b);
       }
@@ -421,7 +484,7 @@ export function meshPiece(solid: (p: Vec3) => number, box: Box, cell: number): S
 }
 
 export function printPieces(design: Design, cfg: DesignConfig, opt: PrintOptions, progress?: (done: number, total: number) => void, plan = mountPlan(design, cfg)): PrintPiece[] {
-  const boxes = planPieces(design, opt, isSculpt(cfg) ? shellBounds(design, cfg) : undefined);
+  const boxes = planPieces(design, opt, isSculpt(cfg) ? shellBounds(design, cfg) : undefined, shellField(design, cfg, cfg.prefs.organic ?? 0));
   // Joints between pieces: the box faces shared by two pieces.
   const joints: { axis: number; at: number }[] = [];
   for (let a = 0; a < 3; a++) {

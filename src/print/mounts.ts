@@ -224,7 +224,11 @@ export function mountPlan(design: Design, cfg: DesignConfig): MountPlan {
         fanScrews += 4;
       }
       out.tiltFrames.push(tf);
-      out.warnings.push(`${tf.label}: its plate leans ${p.tilt.deg}° off the panel; print that panel with supports under the plate (or turn it so the plate stands on the bed).`);
+      out.warnings.push(
+        cfg.prefs.mold
+          ? `${tf.label}: the moulded skin slants ${p.tilt.deg}° along the fans; print that piece with the slant facing up, or with supports under it.`
+          : `${tf.label}: its plate leans ${p.tilt.deg}° off the panel; print that panel with supports under the plate (or turn it so the plate stands on the bed).`,
+      );
       out.hardware.push(
         p.kind === 'case-fan'
           ? { item: 'Case-fan screw (self-tapping, as supplied with the fan)', qty: 4, note: `${p.label}: through the ${TILT_PLATE} mm frame plate into the fan's corner holes.` }

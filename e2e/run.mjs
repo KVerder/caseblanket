@@ -104,6 +104,16 @@ for (const [name, vp, opts] of [
   await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   const t1 = await thickness();
   check(t1 >= t0, `airflow priority 100% does not make the case thinner (${t0} → ${t1} mm)`);
+  // Shrinkwrap mode: moulded shell, dead space reported.
+  await page.locator('#mold').check({ force: true });
+  await page.waitForTimeout(2500);
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
+  const moldText = await page.waitForFunction(() => /dead space/.test(document.body.innerText), null, { timeout: 60000 }).then(() => true, () => false);
+  check(moldText, 'shrinkwrap mode reports the dead space of the moulded shell');
+  await page.screenshot({ path: `${out}/controls-mold.png` });
+  await page.locator('#mold').uncheck({ force: true });
+  await page.waitForTimeout(2500);
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   await page.locator('#edge-r').fill('30');
   await page.waitForTimeout(2500);
   await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });

@@ -149,6 +149,8 @@ export interface Design {
   compactCost: number;
   /** Why this design is in the shortlist ("Best match", "Thinnest", …). */
   tags: string[];
+  /** Shrinkwrap mode: the moulded shell's estimated size, which the ranking uses instead of the box's. */
+  mold?: { volumeL: number; thickness: number };
   /** Outer size of the shrinkwrapped shell, when the shell is organic. */
   wrap?: WrapMetrics;
 }
@@ -227,6 +229,9 @@ export interface EvalContext {
 export function evaluate(node: PackNode, ctx: EvalContext, index: number): Design {
   const { cfg, topology, profile, items } = ctx;
   const { prefs, advanced } = cfg;
+  // Shrinkwrap mode: the shell is moulded to every part, so a tilted part's skin runs parallel to
+  // its fans (no wedge, no turn) and no rounded box edge pushes the parts apart.
+  const mold = prefs.mold === true;
   const two = isTwoLayer(topology);
   const s = prefs.spineThickness;
   const T0 = interiorThickness(node, two, s);
@@ -295,7 +300,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   // ---- fillet margins: grow the interior where a part corner would hit the rounded inner edge
   const wall = prefs.wallThickness;
   const chamfer = prefs.edgeStyle === 'chamfer';
-  const ri = Math.max(0, prefs.edgeRadius - wall);
+  const ri = mold ? 0 : Math.max(0, prefs.edgeRadius - wall);
   const mLo: Vec3 = [0, 0, 0];
   const mHi: Vec3 = [0, 0, 0];
   if (ri > 0) {
@@ -576,9 +581,11 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   /**
    * A tilted part: air turns by the tilt angle between the panel and the fans, inside the frame's
    * wedge. Weisbach's sharp-elbow loss, ζ = 0.946·sin²(δ/2) + 2.047·sin⁴(δ/2), on the fan area.
+   * Moulded (shrinkwrap mode): the vented skin runs parallel to the fans, so the air goes straight in.
    */
+  const tiltGap = (p: PlacedPart) => (mold ? 0 : tiltMeanGap(p.tilt));
   const tiltTurn = (p: PlacedPart, area: number): LossTerm[] => {
-    if (!p.tilt) return [];
+    if (!p.tilt || mold) return [];
     const s2 = Math.sin((p.tilt.deg * Math.PI) / 360) ** 2;
     return [{ label: 'tilt turn', zeta: 0.946 * s2 + 2.047 * s2 * s2, area }];
   };
@@ -590,7 +597,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     const coreArea = rad.length * rad.width * MM2;
     const losses: LossTerm[] = [
       { label: 'radiator core', zeta: advanced.radLossK * (rad.coreThickness / 27), area: coreArea },
-      { label: 'fan proximity', zeta: prox(p.faceAtWall ? p.faceGap + tiltMeanGap(p.tilt) : 0, fan), area: fanArea(fan, p.fanCount!) },
+      { label: 'fan proximity', zeta: prox(p.faceAtWall ? p.faceGap + tiltGap(p) : 0, fan), area: fanArea(fan, p.fanCount!) },
       ...tiltTurn(p, fanArea(fan, p.fanCount!)),
     ];
     if (p.faceAtWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor(p.id, p.face) }, ...floorGap(p.id, p.face));
@@ -621,7 +628,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     const fan = p.fan!;
     const area = fanArea(fan, 1);
     const plen = cfg.advanced.radPlenumGap + profile.extraGap + (prefs.flow?.deepPlenums ? DEEP_PLENUM : 0);
-    const losses: LossTerm[] = [{ label: 'fan proximity', zeta: prox(p.faceAtWall ? p.faceGap + tiltMeanGap(p.tilt) : 0, fan), area }, ...tiltTurn(p, area)];
+    const losses: LossTerm[] = [{ label: 'fan proximity', zeta: prox(p.faceAtWall ? p.faceGap + tiltGap(p) : 0, fan), area }, ...tiltTurn(p, area)];
     if (p.faceAtWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor(p.id, p.face) }, ...floorGap(p.id, p.face));
     else losses.push({ label: 'blocked face', zeta: 40, area });
     losses.push({ label: 'plenum', zeta: 1, area: Math.min(area, 4 * fan.size * plen * MM2) });
@@ -693,7 +700,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       const [len, wid, thick] = p.size;
       const start = (len - n * fan.size) / 2;
       const discs = p.tilt || p.face === undefined ? [] : Array.from({ length: n }, (_, i) => ({ centre: localToWorld(p.frame, p.body, [start + fan.size * (i + 0.5), wid / 2, thick]), wall: p.face!, radius: Math.min(fan.size, wid) / 2 - 2 }));
-      flowFans.push({ id: p.id, fan, count: n, gap: p.faceGap + tiltMeanGap(p.tilt), atWall: p.faceAtWall, tilted: !!p.tilt, ductable: p.faceAtWall && p.mode !== 'through' && p.faceGap > 2 && !p.tilt, discs });
+      flowFans.push({ id: p.id, fan, count: n, gap: p.faceGap + tiltGap(p), atWall: p.faceAtWall, tilted: !!p.tilt && !mold, ductable: p.faceAtWall && p.mode !== 'through' && p.faceGap > 2 && !p.tilt, discs });
     }
   }
   const holeD = perforation(vs.id).size;
@@ -782,8 +789,8 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
 
   // ---- fan speeds and noise, at each load
   const fanMeta: Record<string, { fan: FanSpec; count: number; gap: number; atWall: boolean; label: string }> = {};
-  for (const p of radParts) fanMeta[p.id] = { fan: p.fan!, count: p.fanCount!, gap: p.faceGap + tiltMeanGap(p.tilt), atWall: p.faceAtWall, label: `${p.label} fans` };
-  for (const p of fanParts) fanMeta[p.id] = { fan: p.fan!, count: 1, gap: p.faceGap + tiltMeanGap(p.tilt), atWall: p.faceAtWall, label: p.label };
+  for (const p of radParts) fanMeta[p.id] = { fan: p.fan!, count: p.fanCount!, gap: p.faceGap + tiltGap(p), atWall: p.faceAtWall, label: `${p.label} fans` };
+  for (const p of fanParts) fanMeta[p.id] = { fan: p.fan!, count: 1, gap: p.faceGap + tiltGap(p), atWall: p.faceAtWall, label: p.label };
   if (cooler.kind !== 'aio') fanMeta.cpu = { fan: cooler.fan, count: 1, gap: board.faceGap, atWall: board.faceAtWall && vents.some((v) => v.groupId === 'cpu'), label: 'CPU cooler fan' };
   if (gpuSpec.cardFan) fanMeta['gpu-card'] = { fan: gpuSpec.cardFanSpec, count: 1, gap: gpu.faceGap, atWall: gpu.faceAtWall && vents.some((v) => v.groupId === 'gpu'), label: 'Graphics card fan' };
   const psuMeta = { fan: psuSpec.fan, gap: psu.faceGap, atWall: psu.faceAtWall };

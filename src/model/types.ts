@@ -216,6 +216,11 @@ export interface Preferences {
   shell: ShellKind;
   /** Facet and pebble shells: bevel depth, front lean (degrees) and roundness. */
   sculpt: { cut: number; slope: number; round: number };
+  /**
+   * Shrinkwrap mode: the shell is moulded along every part, its air gaps, hoses and cables, with no
+   * dead space (overrides `shell`, `organic` and `sculpt`). Layouts are ranked on the moulded size.
+   */
+  mold?: boolean;
   /** Shrinkwrap smoothness: 0 = tight with straight faces, 1 = smooth, bridging gaps up to ~180 mm. */
   organic: number;
   edgeStyle: EdgeStyle;

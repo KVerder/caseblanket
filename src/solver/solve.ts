@@ -3,7 +3,7 @@ import { TILT_ANGLES } from './tilt';
 import { evaluate, type Design } from './evaluate';
 import { buildItems, isDirect, isTwoLayer, PROFILES, type Profile } from './items';
 import { pack } from './pack';
-import { isWrap, wrapMetrics } from './shrinkwrap';
+import { isMold, isWrap, moldEstimate, wrapMetrics } from './shrinkwrap';
 
 export interface SolveOptions {
   beamWidth?: number;
@@ -47,19 +47,23 @@ export function activeProfiles(cfg: DesignConfig): Profile[] {
   return PROFILES.filter((p) => !p.slim || (cfg.prefs.allowSlimFans && has120Rad));
 }
 
+/** Size the ranking sees: the moulded shell's in shrinkwrap mode, otherwise the box's. */
+const volumeOf = (d: Design) => d.mold?.volumeL ?? d.volumeL;
+const thicknessOf = (d: Design) => d.mold?.thickness ?? d.thickness;
+
 export function rankDesigns(designs: Design[], cfg: DesignConfig): Design[] {
   const { airflowPriority: s } = cfg.prefs;
   const alpha = Math.min(0.97, Math.max(0.03, cfg.prefs.thinnessPriority));
   const valid = designs.filter((d) => !d.invalid);
   const pool = valid.length ? valid : designs;
-  const tBest = Math.min(...pool.map((d) => d.thickness));
-  const vBest = Math.min(...pool.map((d) => d.volumeL));
+  const tBest = Math.min(...pool.map(thicknessOf));
+  const vBest = Math.min(...pool.map(volumeOf));
   const load = cfg.prefs.loadProfile ?? 'gaming';
   const quiet = cfg.prefs.noiseMode === 'quiet';
   const splOf = (d: Design) => d.noise?.[load]?.noise.spl ?? 0;
   const splBest = Math.min(...pool.map(splOf));
   for (const d of designs) {
-    d.compactCost = alpha * Math.log(d.thickness / tBest) + (1 - alpha) * Math.log(d.volumeL / vBest);
+    d.compactCost = alpha * Math.log(thicknessOf(d) / tBest) + (1 - alpha) * Math.log(volumeOf(d) / vBest);
     // Within a noise budget, rank on how cool it runs; in quiet mode, on how quiet it is (10 dB ≈ the thermal score's full range).
     const comfort = quiet ? (splOf(d) - splBest) / 10 : 1 - d.flow.score;
     let cost = (1 - s) * d.compactCost + s * comfort;
@@ -117,6 +121,7 @@ export function solve(cfg: DesignConfig, opts: SolveOptions = {}): SolveResult {
         nodes.slice(0, deg ? Math.ceil(perRun / 3) : perRun).forEach((n, i) => {
           const d = evaluate(n, { cfg, topology, profile, items }, i);
           if (deg) d.id += `-tilt${deg}`;
+          if (isMold(cfg)) d.mold = moldEstimate(d, cfg);
           all.push(d);
         });
       }
@@ -131,7 +136,7 @@ export function solve(cfg: DesignConfig, opts: SolveOptions = {}): SolveResult {
     for (const d of designs) {
       d.wrap = wrapMetrics(d, cfg, cfg.prefs.organic);
       // What the smoothness costs, for the best match only (it means meshing the shell twice).
-      if (d === designs[0] && cfg.prefs.shell === 'wrap' && cfg.prefs.organic > 0.02) d.wrap.smoothingL = Math.max(0, d.wrap.volumeL - wrapMetrics(d, cfg, 0).volumeL);
+      if (d === designs[0] && !isMold(cfg) && cfg.prefs.shell === 'wrap' && cfg.prefs.organic > 0.02) d.wrap.smoothingL = Math.max(0, d.wrap.volumeL - wrapMetrics(d, cfg, 0).volumeL);
     }
   // The design space: every valid layout, minus exact repeats (same size and thermal result).
   const seen = new Set<string>();
@@ -174,8 +179,8 @@ export function shortlist(ranked: Design[], maxResults: number): Design[] {
   pick(pool[0], 'Best match');
   const acceptable = pool.filter((d) => !d.limited);
   const base = acceptable.length ? acceptable : pool;
-  pick([...base].sort((a, b) => a.thickness - b.thickness || a.volumeL - b.volumeL)[0], 'Thinnest');
-  pick([...base].sort((a, b) => a.volumeL - b.volumeL || a.thickness - b.thickness)[0], 'Smallest');
+  pick([...base].sort((a, b) => thicknessOf(a) - thicknessOf(b) || volumeOf(a) - volumeOf(b))[0], 'Thinnest');
+  pick([...base].sort((a, b) => volumeOf(a) - volumeOf(b) || thicknessOf(a) - thicknessOf(b))[0], 'Smallest');
   pick([...pool].sort((a, b) => b.flow.score - a.flow.score)[0], 'Coolest');
   for (const t of ['flat', 'sandwich', 'direct'] as TopologyId[]) {
     pick(

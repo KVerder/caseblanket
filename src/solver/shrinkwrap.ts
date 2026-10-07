@@ -25,6 +25,12 @@ import { axisOf, signOf, wallAxes, type Box, type Vec3 } from './geometry';
  * The box is never blended in: every litre of the wrap is parts, clearances, hoses, the wall
  * and the bridging the smoothness asks for.
  *
+ * Shrinkwrap mode (prefs.mold) moulds the shell to the parts with no dead space: smoothness 0, a
+ * closing just wide enough to keep unprintable slits out (MOLD_CLOSE), no wedge behind tilted parts
+ * (the skin runs along the tilted fans, vented, at the fans' wall gap) and the flat I/O plate only
+ * behind each rear part, not across the gap between them. deadSpaceL() measures what any shell
+ * holds beyond those shapes.
+ *
  * All coordinates are solver coordinates (u, v, t) in mm, interior from 0 to design.interior.
  */
 
@@ -45,6 +51,8 @@ export interface WrapMetrics {
   weightKg: number;
   /** Litres the smoothness adds over the tightest wrap (smoothness 0). */
   smoothingL?: number;
+  /** Air inside the shell that no part, air gap, hose or cable needs, litres. */
+  deadL?: number;
 }
 
 const BODY_ROUND = 3.5;
@@ -54,10 +62,17 @@ const SOFT_RANGE = 2.5;
 const CLOSE_MIN = 15;
 const CLOSE_RANGE = 50;
 
-export const isWrap = (cfg: DesignConfig) => cfg.prefs.shell !== 'box';
+/** Shrinkwrap mode: moulded to every part, whatever the shell setting. */
+export const isMold = (cfg: DesignConfig) => cfg.prefs.mold === true;
+export const isWrap = (cfg: DesignConfig) => isMold(cfg) || cfg.prefs.shell !== 'box';
 /** Angled (facet) or curved (pebble) panels: analytic convex shells, see sculpt.ts. */
-export const isSculpt = (cfg: DesignConfig) => cfg.prefs.shell === 'facet' || cfg.prefs.shell === 'pebble';
+export const isSculpt = (cfg: DesignConfig) => !isMold(cfg) && (cfg.prefs.shell === 'facet' || cfg.prefs.shell === 'pebble');
 export const closeRadius = (s: number) => CLOSE_MIN + CLOSE_RANGE * Math.min(1, Math.max(0, s));
+/**
+ * Closing radius in shrinkwrap mode: bridges only slits under ~2R between parts, which would print as
+ * two walls with a crevice between them too narrow to clean or to cool anything.
+ */
+export const moldClose = (wall: number) => Math.max(6, 2 * wall);
 
 function sdBox(p: Vec3, b: Box, r: number): number {
   let out = 0;
@@ -93,7 +108,7 @@ export function boxField(design: Design, cfg: DesignConfig): Field {
   };
 }
 
-function wrapShapes(design: Design, cfg: DesignConfig, o: number) {
+function wrapShapes(design: Design, cfg: DesignConfig, o: number, mold = isMold(cfg)) {
   // Rounding only ever shrinks a box, so the body rounding is covered by the softness (0.73·r ≤ soft − wall).
   const rb = BODY_ROUND * o;
   const rc = CLEAR_ROUND * o;
@@ -112,7 +127,9 @@ function wrapShapes(design: Design, cfg: DesignConfig, o: number) {
           ext.min[a] = Math.min(ext.min[a], q[a]);
           ext.max[a] = Math.max(ext.max[a], q[a]);
         }
-      shapes.push({ box: ext, r: 0, sdf: t.body }, { box: ext, r: 0, sdf: tc.clearance }, { box: ext, r: 0, sdf: t.wedge });
+      shapes.push({ box: ext, r: 0, sdf: t.body }, { box: ext, r: 0, sdf: tc.clearance });
+      // Moulded: no wedge; the clearance's panel side (the fans' wall gap) is where the skin runs.
+      if (!mold) shapes.push({ box: ext, r: 0, sdf: t.wedge });
       continue;
     }
     shapes.push({ box: part.body, r: Math.min(rb, half(part.body)) });
@@ -123,7 +140,10 @@ function wrapShapes(design: Design, cfg: DesignConfig, o: number) {
   const conn = connectorBox(design, cfg);
   if (conn) shapes.push({ box: conn, r: Math.min(rb, half(conn)) });
   const rear = design.parts.filter((p) => p.kind === 'board' || (p.kind === 'gpu' && p.body.min[0] < 2));
-  if (rear.length) {
+  if (mold)
+    // A flat plate behind each rear part's own I/O, not one spanning the gap between them.
+    for (const p of rear) shapes.push({ box: { min: [0, p.clearance.min[1], p.clearance.min[2]], max: [20, p.clearance.max[1], p.clearance.max[2]] }, r: 0 });
+  else if (rear.length) {
     const b: Box = { min: [0, Infinity, Infinity], max: [20, -Infinity, -Infinity] };
     for (const p of rear)
       for (const a of [1, 2]) {
@@ -298,7 +318,8 @@ function closingGrid(design: Design, union: Field, R: number, fineCell: number):
 
 /** Outer-surface field of the shell on a grid (negative inside). */
 export function shellGrid(design: Design, cfg: DesignConfig, organic: number, cell: number): Grid {
-  const s = Math.min(1, Math.max(0, organic));
+  const mold = isMold(cfg);
+  const s = mold ? 0 : Math.min(1, Math.max(0, organic));
   const wall = design.wall;
   const soft = wall + SOFT_MIN + SOFT_RANGE * s + cell * 0.45;
   const pad = soft + 3 * cell;
@@ -317,7 +338,7 @@ export function shellGrid(design: Design, cfg: DesignConfig, organic: number, ce
     return g;
   }
   const union = unionField(wrapShapes(design, cfg, s), routedPaths(design, cfg));
-  const closing = sampleGrid(closingGrid(design, union, closeRadius(s), cell));
+  const closing = sampleGrid(closingGrid(design, union, mold ? moldClose(wall) : closeRadius(s), cell));
   // min with the exact union: parts are always covered exactly; the closing only bridges gaps.
   forEachPoint(g, (p, id) => (g.vals[id] = Math.min(union(p), closing(p)) - soft));
   fillPockets(g, wall);
@@ -506,7 +527,52 @@ export function worldSize(cfg: DesignConfig, s: Vec3) {
 }
 
 export function wrapMetrics(design: Design, cfg: DesignConfig, organic: number, detail = 0.5): WrapMetrics {
-  return meshMetrics(design, cfg, meshShell(design, cfg, organic, 0, detail));
+  const g = shellGrid(design, cfg, organic, defaultCell(design, detail));
+  return { ...meshMetrics(design, cfg, meshGrid(g)), deadL: deadSpaceL(design, cfg, g) };
+}
+
+/** What every shell must hold: the parts, their air gaps, hoses and cables (the moulded shapes). */
+export function neededField(design: Design, cfg: DesignConfig): Field {
+  return unionField(wrapShapes(design, cfg, 0, true), routedPaths(design, cfg));
+}
+
+/**
+ * Dead space of a shell, litres: air inside its inner surface (the outer field below −wall) that
+ * no part, air gap, hose or cable needs, counted on the shell's own grid.
+ */
+export function deadSpaceL(design: Design, cfg: DesignConfig, g: Grid): number {
+  const need = neededField(design, cfg);
+  let dead = 0;
+  forEachPoint(g, (p, id) => {
+    if (g.vals[id] <= -design.wall && need(p) > 0) dead++;
+  });
+  return (dead * g.cell ** 3) / 1e6;
+}
+
+/**
+ * Quick estimate of the moulded shell's size for ranking layouts in shrinkwrap mode: the needed
+ * shapes grown by the wall, counted on a coarse grid (no mesh, no closing).
+ */
+export function moldEstimate(design: Design, cfg: DesignConfig, cell = 10): { volumeL: number; thickness: number } {
+  const need = neededField(design, cfg);
+  const w = design.wall + SOFT_MIN;
+  const pad = w + cell;
+  const g = makeGrid([-pad, -pad, -pad], [design.interior[0] + pad, design.interior[1] + pad, design.interior[2] + pad], cell);
+  let n = 0;
+  const lo: Vec3 = [Infinity, Infinity, Infinity];
+  const hi: Vec3 = [-Infinity, -Infinity, -Infinity];
+  forEachPoint(g, (p) => {
+    if (need(p) > w) return;
+    n++;
+    for (let a = 0; a < 3; a++) {
+      lo[a] = Math.min(lo[a], p[a]);
+      hi[a] = Math.max(hi[a], p[a]);
+    }
+  });
+  if (!n) return { volumeL: design.volumeL, thickness: design.thickness };
+  const size = [0, 1, 2].map((a) => hi[a] - lo[a] + cell) as Vec3;
+  const world = worldSize(cfg, size);
+  return { volumeL: (n * cell ** 3) / 1e6, thickness: Math.min(world.width, world.height, world.depth) };
 }
 
 /** Outer size, volume and panel weight of a meshed shell. */

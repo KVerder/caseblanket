@@ -446,6 +446,7 @@ export const DEFAULT_PREFS: Preferences = {
   edgeStyle: 'round',
   edgeRadius: 6,
   shell: 'wrap',
+  mold: false,
   sculpt: { cut: 0.7, slope: 0, round: 0.6 },
   organic: 0.4,
   wallThickness: 2.4,

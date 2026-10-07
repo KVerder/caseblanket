@@ -1,4 +1,4 @@
-import { closeRadius } from '../solver/shrinkwrap';
+import { closeRadius, moldClose } from '../solver/shrinkwrap';
 import { FINISHES, MATERIALS, VENT_STYLES } from '../model/presets';
 import type { DesignConfig, PanelName, Preferences, TopologyId } from '../model/types';
 import { produce } from '../state/config';
@@ -64,6 +64,15 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
       </Section>
 
       <Section title="Shape & finish">
+        <Toggle id="mold" label="Shrinkwrap mode: mould the case to every part" checked={p.mold === true} onChange={(v) => set('mold', v)} />
+        {p.mold && (
+          <p className="muted small">
+            The shell follows every part, its air gaps, the hoses and cables, with no dead space: tilted radiators and fans get a slanted, vented skin
+            along their fans instead of a wedge out to a flat panel. Layouts are still chosen by your priorities, with size measured on the moulded
+            shell. Slits under {Math.round(2 * moldClose(p.wallThickness))} mm between parts are closed over (they could not be printed or cleaned).
+          </p>
+        )}
+        {!p.mold && (<>
         <Segmented
           label="Shell"
           value={p.shell}
@@ -110,6 +119,7 @@ export function TunePanel({ cfg, setCfg }: { cfg: DesignConfig; setCfg: (c: Desi
             </p>
           </>
         )}
+        </>)}
         <Segmented
           label="Edges"
           value={p.edgeStyle}

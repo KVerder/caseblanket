@@ -336,7 +336,8 @@ export function buildScene(design: Design, cfg: DesignConfig, shapingIn: Shaping
   const tiltFrame = (part: PlacedPart, fanCentres: number[], fanR: number) => {
     const [L, W, T] = part.tilt!.size;
     const z0 = T - TILT_PLATE;
-    const reach = T + L; // past the panel; cut back to the inside of the shell below
+    // Past the panel, cut back to the inside of the shell below; moulded, only across the wall gap to the skin.
+    const reach = cfg.prefs.mold ? T + (part.tilt!.clear?.hi[2] ?? 0) + 2 * design.wall + 6 : T + L;
     const inside = (c: number) => !wallCell[c] && fieldVals[c] < 0;
     for (const c of cellsInPart(part, [0, 0, z0], [L, W, T])) {
       if (cellType[c] === CELL_SOLID || !inside(c)) continue;
