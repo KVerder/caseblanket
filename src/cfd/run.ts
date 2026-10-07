@@ -42,8 +42,8 @@ export function simulate(design: Design, cfg: DesignConfig, shaping: Shaping, op
  * (or at `maxSeconds`). Poorly ventilated cases take several seconds to heat up; well ventilated
  * ones settle in about one.
  */
-export function simulateSteady(design: Design, cfg: DesignConfig, shaping: Shaping, opts: { cells?: number; cell?: number; minSeconds?: number; maxSeconds?: number; tolK?: number } = {}) {
-  const scene = buildScene(design, cfg, shaping, { cells: opts.cells, cell: opts.cell });
+export function simulateSteady(design: Design, cfg: DesignConfig, shaping: Shaping, opts: { cells?: number; cell?: number; minSeconds?: number; maxSeconds?: number; tolK?: number; uniformRadHeat?: boolean } = {}) {
+  const scene = buildScene(design, cfg, shaping, { cells: opts.cells, cell: opts.cell, uniformRadHeat: opts.uniformRadHeat });
   const sim = new FlowSolver(scene);
   const dt = sim.suggestDt();
   const minS = opts.minSeconds ?? 1.4;

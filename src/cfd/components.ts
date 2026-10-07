@@ -18,7 +18,8 @@ export interface CfdThermal {
  *   'inlet'   flow-weighted air entering the heat source
  *   'mean'    mean air in the heat source (fins, card)
  *   'exit'    inlet + 2·(mean − inlet)
- *   'coolant' inlet + 2·(mean − inlet) / radiator effectiveness
+ *   'coolant' the simulated coolant (radiator cores exchange heat at the local air speed), else
+ *             inlet + 2·(mean − inlet) / radiator effectiveness
  *   'zone'    air over the board (the board heat source's mean), else the case average
  */
 export function cfdComponents(design: Design, cfg: DesignConfig, st: FlowStats): CfdThermal {
@@ -38,6 +39,8 @@ export function cfdComponents(design: Design, cfg: DesignConfig, st: FlowStats):
             ? src.meanRise
             : c.air === 'exit'
               ? src.inletRise + through
+              : src.coolantRise !== undefined
+              ? src.coolantRise
               : src.inletRise + through / eff;
     const tempC = amb + air + c.selfRiseK;
     return { ...c, tempC, headroomK: c.limitC - tempC, margin: (c.limitC - tempC) / Math.max(1, c.limitC - amb) };

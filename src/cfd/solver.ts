@@ -54,6 +54,14 @@ export interface HeatSource {
   label: string;
   cells: Int32Array;
   watts: number;
+  /**
+   * A liquid-to-air heat exchanger (radiator core): instead of releasing its heat evenly in every
+   * cell, each cell exchanges heat with coolant at one temperature, at a rate set by its local air
+   * speed (ε-NTU per column, h ∝ v^HX_VEL_EXP), and the coolant temperature is whatever delivers the
+   * source's watts. At even flow the core's effectiveness is `eff`; air in a starved column can heat
+   * no further than the coolant, as in a real core. `thickness` is the core depth along the flow, mm.
+   */
+  exchanger?: { eff: number; thickness: number };
 }
 
 export interface Scene {
@@ -86,6 +94,8 @@ export interface SourceStats {
   inletRise: number;
   /** Mean rise of the air in the heat source. */
   meanRise: number;
+  /** Heat exchangers: coolant temperature rise above room, K (see HeatSource.exchanger). */
+  coolantRise?: number;
 }
 
 export interface FlowStats {
@@ -111,6 +121,11 @@ export interface FlowQuality {
 }
 
 const RHO_CP = 1.2e-9 * 1005; // J/(mm³·K)
+/**
+ * Air-side heat transfer coefficient ∝ v^n in louvred-fin cores: Chang & Wang (1997) give the
+ * Colburn factor j ∝ Re^-0.49, so h ∝ Re^0.51 (cited from memory, not verified against the paper).
+ */
+export const HX_VEL_EXP = 0.51;
 const RHO_AIR = 1.2; // kg/m³
 /** A fan's stall pressure, Pa: given, or recovered from its stall acceleration over the disk depth. */
 const pmaxPa = (f: FanDisk, h: number) => f.pmaxPa ?? (f.a0 / 1000) * RHO_AIR * ((Math.max(1, f.layers ?? 1) * h) / 1000);
@@ -141,6 +156,8 @@ export class FlowSolver {
   private Sv: Float32Array;
   private Sw: Float32Array;
   private heatRate: Float32Array;
+  /** Coolant temperature rise per exchanger source id. */
+  private coolant = new Map<string, number>();
   steps = 0;
   time = 0;
 
@@ -169,7 +186,7 @@ export class FlowSolver {
     this.heatRate = new Float32Array(this.T.length);
     const vol = this.h ** 3;
     for (const src of scene.heat) {
-      if (!src.cells.length) continue;
+      if (!src.cells.length || src.exchanger) continue;
       const k = src.watts / (src.cells.length * vol * RHO_CP);
       for (const c of src.cells) this.heatRate[c] += k;
     }
@@ -562,6 +579,44 @@ export class FlowSolver {
         }
   }
 
+  /**
+   * Radiator cores: each cell moves toward the coolant temperature Tc by a = 1 − exp(−r·dt), with
+   * r = NTU₀·v̄^(1−n)·v^n / L (so a column of even flow v̄ through depth L reaches effectiveness
+   * 1 − e^−NTU₀ = eff), and Tc is set so the cells take exactly the source's watts this step.
+   */
+  private applyExchangers(dt: number) {
+    const vol = this.h ** 3;
+    for (const src of this.s.heat) {
+      const hx = src.exchanger;
+      if (!hx || !src.cells.length) continue;
+      const speeds = new Float32Array(src.cells.length);
+      let mean = 0;
+      src.cells.forEach((c, idx) => {
+        const v = this.centre(c);
+        speeds[idx] = Math.hypot(v[0], v[1], v[2]);
+        mean += speeds[idx];
+      });
+      mean = Math.max(20, mean / src.cells.length); // mm/s; still air at start-up
+      const ntu0 = -Math.log(1 - Math.min(0.98, Math.max(0.05, hx.eff)));
+      const base = (ntu0 * Math.pow(mean, 1 - HX_VEL_EXP)) / Math.max(this.h, hx.thickness);
+      let sumA = 0;
+      let sumAT = 0;
+      const a = new Float32Array(src.cells.length);
+      src.cells.forEach((c, idx) => {
+        const v = Math.max(0.02 * mean, speeds[idx]);
+        a[idx] = 1 - Math.exp(-base * Math.pow(v, HX_VEL_EXP) * dt);
+        sumA += a[idx];
+        sumAT += a[idx] * this.T2[c];
+      });
+      if (sumA <= 0) continue;
+      const tc = (src.watts * dt) / (RHO_CP * vol) / sumA + sumAT / sumA;
+      this.coolant.set(src.id, tc);
+      src.cells.forEach((c, idx) => {
+        this.T2[c] += a[idx] * (tc - this.T2[c]);
+      });
+    }
+  }
+
   private advectHeat(dt: number) {
     const { nx, ny, nz, h } = this;
     const type = this.s.cellType;
@@ -579,6 +634,7 @@ export class FlowSolver {
           const z = (k + 0.5) * h - dt * vz;
           this.T2[c] = this.sampleT(x, y, z) + this.heatRate[c] * dt;
         }
+    this.applyExchangers(dt);
     // Turbulent mixing (explicit, stable for alpha < 1/6), no flux into solids.
     const alpha = Math.min(0.14, (1500 * dt) / (h * h));
     const T = this.T;
@@ -647,7 +703,7 @@ export class FlowSolver {
           tflux += inflow * this.T[nb];
         }
       }
-      sources.push({ id: src.id, label: src.label, watts: src.watts, inletRise: flux > 0 ? tflux / flux : 0, meanRise: mean / src.cells.length });
+      sources.push({ id: src.id, label: src.label, watts: src.watts, inletRise: flux > 0 ? tflux / flux : 0, meanRise: mean / src.cells.length, coolantRise: this.coolant.get(src.id) });
     }
     let caseRise = 0;
     for (const c of this.s.interior) caseRise += this.T[c];
