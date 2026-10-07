@@ -246,7 +246,7 @@ export default function App() {
       <Temperatures d={design} cfg={cfg} />
       <Noise d={design} cfg={cfg} />
       <Chambers d={design} cfg={cfg} />
-      <ShapesPanel design={design} cfg={cfg} setCfg={setCfg} />
+      <ShapesPanel design={design} cfg={cfg} setCfg={setCfg} onPick={(id) => (pendingPick.current = id)} />
       <PrintPlan design={design} cfg={cfg} />
       <AirflowTable d={design} cfg={cfg} />
       <StructuresPanel design={design} cfg={cfg} />

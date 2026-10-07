@@ -108,8 +108,8 @@ describe('showcase designs', () => {
     SHOWCASE.find((x) => x.id === id)!.apply(cfg);
     return { cfg, d: solve(cfg, { wrapMetrics: false }).designs[0] };
   };
-  it('three of them, each sculpted, each with a power button somewhere flat', () => {
-    expect(SHOWCASE).toHaveLength(3);
+  it('four of them, each shrinkwrapped or sculpted, each with a power button somewhere flat', () => {
+    expect(SHOWCASE).toHaveLength(4);
     for (const x of SHOWCASE) {
       const { cfg, d } = build(x.id);
       expect(['facet', 'pebble', 'wrap']).toContain(cfg.prefs.shell);
@@ -117,6 +117,17 @@ describe('showcase designs', () => {
       expect(mountPlan(d, cfg).holes.some((h) => h.label === 'power button')).toBe(true);
     }
   }, 120000);
+  it('the cooling flagship finds its layout with the default parts, valid and printable', () => {
+    const x = SHOWCASE.find((s) => s.id === 'flagship')!;
+    const cfg: DesignConfig = defaultConfig();
+    x.apply(cfg);
+    const d = solve(cfg, { wrapMetrics: false }).space.find((s) => s.id === x.designId)!;
+    expect(d).toBeDefined();
+    expect(d.invalid).toBe(false);
+    expect(d.parts.some((p) => p.tilt)).toBe(false);
+    const pieces = printPieces(d, cfg, DEFAULT_PRINT);
+    expect(pieces.reduce((s, p) => s + (p.dropped ?? 0), 0)).toBe(0);
+  }, 300000);
   it('the Seed prints without loose fragments', () => {
     const { cfg, d } = build('seed');
     const pieces = printPieces(d, cfg, DEFAULT_PRINT);

@@ -12,7 +12,18 @@ const mm = (x: number) => `${Math.round(x)}`;
  * angled panels, curved panels), measured from its own mesh. The parts, vents and fans do not
  * move, so the airflow model rates them alike; the 3D simulation sees each shape's outside.
  */
-export function ShapesPanel({ design, cfg, setCfg }: { design: Design; cfg: DesignConfig; setCfg: (c: DesignConfig) => void }) {
+export function ShapesPanel({
+  design,
+  cfg,
+  setCfg,
+  onPick,
+}: {
+  design: Design;
+  cfg: DesignConfig;
+  setCfg: (c: DesignConfig) => void;
+  /** A layout to select once the showcase's settings are solved. */
+  onPick?: (id: string) => void;
+}) {
   const [rows, setRows] = useState<(WrapMetrics | null)[]>(() => SHELL_SHAPES.map(() => null));
   useEffect(() => {
     let cancelled = false;
@@ -86,7 +97,14 @@ export function ShapesPanel({ design, cfg, setCfg }: { design: Design; cfg: Desi
       <ul className="showcase">
         {SHOWCASE.map((x) => (
           <li key={x.id}>
-            <button type="button" className="btn ghost small" onClick={() => setCfg(produce(cfg, (d) => x.apply(d)))}>
+            <button
+              type="button"
+              className="btn ghost small"
+              onClick={() => {
+                if (x.designId) onPick?.(x.designId);
+                setCfg(produce(cfg, (d) => x.apply(d)));
+              }}
+            >
               {x.name}
             </button>
             <span className="muted small">{x.blurb}</span>

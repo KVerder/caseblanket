@@ -530,7 +530,30 @@ export const SHELL_SHAPES: { id: string; label: string; prefs: Partial<Preferenc
 ];
 
 /** Three designs picked for how they look: the same parts and airflow model, sculpted shells. */
-export const SHOWCASE: { id: string; name: string; blurb: string; apply: (cfg: DesignConfig) => void }[] = [
+/** `designId`: the layout to select after the solve, when the parts allow it (else the best match). */
+export const SHOWCASE: { id: string; name: string; blurb: string; apply: (cfg: DesignConfig) => void; designId?: string }[] = [
+  {
+    id: 'flagship',
+    name: 'Cooling flagship',
+    blurb:
+      "The coolest design the expert team found in 3D for the default parts at 30 dB(A): a slim tower, every part flat in one layer, the radiator straight through the case, 10 mm more room in front of each fan, and no case fans. 3D: the tightest part (the card's memory/VRM, near its own ceiling) keeps 42–44 % of its budget on three grids, in 21 L.",
+    apply: (c) => {
+      c.prefs.orientation = 'tower';
+      c.prefs.airflowPriority = 1;
+      c.prefs.mold = false;
+      c.prefs.shell = 'wrap';
+      c.prefs.organic = 0.4;
+      c.prefs.ventStyleId = 'hex';
+      c.prefs.feetHeight = 20;
+      c.prefs.radDirection = 'auto';
+      c.prefs.flow = { ...c.prefs.flow, roundedHoles: true };
+      c.parts.caseFans.count = 0;
+      c.advanced.coolerFanGap = 15;
+      c.advanced.cardFanGap = 15;
+      c.advanced.radWallGap = 10;
+    },
+    designId: 'flat-tight-slim-6',
+  },
   {
     id: 'pebble',
     name: 'Pebble',
