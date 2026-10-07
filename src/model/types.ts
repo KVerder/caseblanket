@@ -236,6 +236,11 @@ export interface Preferences {
   allowSlimFans: boolean;
   /** Flow structures switched on in the Flow tab (see solver/flow.ts). */
   flow: { ducts: boolean; bellMouths: boolean; diffusers: boolean; roundedHoles: boolean; radiusedTurns: boolean; deepPlenums: boolean; deflectors: boolean };
+  /**
+   * Rank the shortlist by short 3D simulations instead of the fast airflow model (about a minute
+   * or two after each solve; the fast model's ranking agrees poorly with 3D).
+   */
+  rank3D?: boolean;
   /** Let radiators and case fans tilt against their panel (15, 30, 45°) on a printed wedge frame. */
   allowTilt: boolean;
   orientation: Orientation;

@@ -65,7 +65,8 @@ export function rankDesigns(designs: Design[], cfg: DesignConfig): Design[] {
   for (const d of designs) {
     d.compactCost = alpha * Math.log(thicknessOf(d) / tBest) + (1 - alpha) * Math.log(volumeOf(d) / vBest);
     // Within a noise budget, rank on how cool it runs; in quiet mode, on how quiet it is (10 dB ≈ the thermal score's full range).
-    const comfort = quiet ? (splOf(d) - splBest) / 10 : 1 - d.flow.score;
+    // Ranked in 3D: its score stands in for the airflow model's.
+    const comfort = quiet ? (splOf(d) - splBest) / 10 : 1 - (d.check3D?.score ?? d.flow.score);
     let cost = (1 - s) * d.compactCost + s * comfort;
     if (d.limited) cost += 1;
     if (d.invalid) cost += 10;
@@ -73,6 +74,19 @@ export function rankDesigns(designs: Design[], cfg: DesignConfig): Design[] {
     d.cost = cost;
   }
   return [...designs].sort((a, b) => a.cost - b.cost);
+}
+
+/**
+ * The shortlist re-ranked by short 3D runs of each design (`checks`, by id): cooling from 3D,
+ * size and noise as before. "Best match" and "Coolest" move to the 3D winners.
+ */
+export function rerank3D(result: SolveResult, cfg: DesignConfig, checks: Record<string, NonNullable<Design['check3D']>>): SolveResult {
+  const designs = result.designs.map((d) => (checks[d.id] ? { ...d, check3D: checks[d.id], tags: d.tags.filter((t) => t !== 'Best match' && t !== 'Coolest') } : d));
+  const ranked = rankDesigns(designs, cfg);
+  const tag = (d: Design | undefined, t: string) => d && !d.tags.includes(t) && (d.tags = [t, ...d.tags]);
+  tag(ranked.find((d) => !d.invalid) ?? ranked[0], 'Best match');
+  tag([...ranked].filter((d) => d.check3D).sort((a, b) => b.check3D!.worstMargin - a.check3D!.worstMargin)[0], 'Coolest');
+  return { ...result, designs: ranked };
 }
 
 /** Designs that differ only in naming (e.g. a "sandwich" with an empty back layer) or trivially collapse to one. */

@@ -5,7 +5,9 @@ import { download, shellSTL } from './render/export';
 import { panelsSVG } from './render/svgPanels';
 import type { CaseViewer } from './render/Viewer';
 import type { Design } from './solver/evaluate';
-import type { SolveResult } from './solver/solve';
+import { rerank3D, type SolveResult } from './solver/solve';
+import { CfdClient } from './state/cfdClient';
+import { score3D } from './cfd/components';
 import { encodeShare, initialConfig, IS_ARTIFACT, storeConfig } from './state/config';
 import { MeshClient, type ShellResult } from './state/meshClient';
 import { isWrap, meshMetrics } from './solver/shrinkwrap';
@@ -66,6 +68,9 @@ export default function App() {
   // A design to select once the next solve arrives (Funkify picks a layout and its settings together).
   const pendingPick = useRef<string | null>(null);
   const [solving, setSolving] = useState(false);
+  // Ranking the shortlist in 3D (Flow tab): progress while the short simulations run.
+  const [rank3d, setRank3d] = useState<{ done: number; total: number } | null>(null);
+  const rankClient = useRef<CfdClient | null>(null);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>(() => (window.matchMedia('(min-width: 1180px)').matches ? 'parts' : 'design'));
@@ -84,6 +89,8 @@ export default function App() {
   // Solve (debounced) whenever the configuration changes.
   useEffect(() => {
     client.current ??= new SolverClient();
+    rankClient.current?.stop();
+    setRank3d(null);
     const t = setTimeout(() => {
       setSolving(true);
       setProgress(0);
@@ -96,6 +103,25 @@ export default function App() {
           setSelected(want && (r.space.some((d) => d.id === want) || r.designs.some((d) => d.id === want)) ? want : (r.designs[0]?.id ?? null));
           setError(r.designs.length ? null : 'No layout fits these parts and limits. Relax a size limit, allow more layouts or vent more panels.');
           setSolving(false);
+          if (cfg.prefs.rank3D && r.designs.length > 1) {
+            rankClient.current ??= new CfdClient();
+            const first = r.designs[0].id;
+            setRank3d({ done: 0, total: r.designs.length });
+            rankClient.current.check(r.designs, cfg, {
+              progress: (p) => setRank3d({ done: p.done, total: p.total }),
+              checks: (cs) => {
+                const by = Object.fromEntries(
+                  cs.map((c) => [c.id, { worstMargin: c.thermal.worstMargin, worstHeadroomK: c.thermal.worstHeadroomK, worstComponent: c.thermal.worstComponent, score: score3D(c.thermal, cfg.prefs.ambientC) }]),
+                );
+                const rr = rerank3D(r, cfg, by);
+                setResult(rr);
+                // Follow the new best match unless another design was picked meanwhile.
+                setSelected((cur) => (cur === first ? (rr.designs[0]?.id ?? cur) : cur));
+                setRank3d(null);
+              },
+              error: () => setRank3d(null),
+            });
+          }
         })
         .catch((e: Error) => {
           if (e.message === 'superseded') return;
@@ -227,7 +253,7 @@ export default function App() {
       <SimPanel design={design} cfg={cfg} viewer={() => viewerRef.current} />
       <FidelityPanel design={design} cfg={cfg} />
       <Checks d={design} />
-      <Candidates result={result} selected={design.id} onSelect={setSelected} />
+      <Candidates result={result} selected={design.id} onSelect={setSelected} rank3d={rank3d} />
     </>
   );
 

@@ -150,6 +150,8 @@ export interface Design {
   compactCost: number;
   /** Why this design is in the shortlist ("Best match", "Thinnest", …). */
   tags: string[];
+  /** Short 3D simulation of this design, when the shortlist was ranked in 3D. */
+  check3D?: { worstMargin: number; worstHeadroomK: number; worstComponent: string; score: number };
   /** Shrinkwrap mode: the moulded shell's estimated size, which the ranking uses instead of the box's. */
   mold?: { volumeL: number; thickness: number };
   /** Outer size of the shrinkwrapped shell, when the shell is organic. */

@@ -145,8 +145,10 @@ for (const [name, vp, opts] of [
   await shapes.getByRole('button', { name: 'Pebble', exact: true }).click();
   await page.waitForTimeout(2500);
   await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
-  await page.waitForTimeout(4000);
-  const pebble = await page.evaluate(() => window.__caseblanketViewer.shell.children.some((c) => c.userData.organic));
+  // The shell is meshed off the main thread after the solve: wait for it rather than a fixed time.
+  const pebble = await page
+    .waitForFunction(() => window.__caseblanketViewer.shell.children.some((c) => c.userData.organic), null, { timeout: 60000 })
+    .then(() => true, () => false);
   check(pebble, 'the Pebble showcase design shows a sculpted shell');
   await page.screenshot({ path: `${out}/showcase-pebble.png` });
   // Flow tab: a structure switched on re-solves the design.
@@ -155,6 +157,16 @@ for (const [name, vp, opts] of [
   await page.waitForTimeout(2500);
   await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   check(await page.locator('#flow-roundedHoles').isChecked(), 'the Flow tab switches a structure on');
+  // Ranking the shortlist by 3D simulation: progress, then the 3D numbers on the alternatives.
+  await page.locator('#rank3d').check({ force: true });
+  await page.waitForTimeout(2500);
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
+  const ranked3d = await page.locator('#rank3d-note').waitFor({ state: 'attached', timeout: 300000 }).then(() => true, () => false);
+  const tagged = await page.locator('.cand-air', { hasText: '3D:' }).count();
+  check(ranked3d && tagged >= 2, `the shortlist is ranked by 3D simulation (${tagged} alternatives show a 3D result)`);
+  await page.locator('#rank3d').uncheck({ force: true });
+  await page.waitForTimeout(2500);
+  await page.waitForSelector('.solving', { state: 'detached', timeout: 60000 });
   // Explorer: the other flow-structure setting's frontier, overlaid.
   const exp = page.locator('.explorer');
   await exp.scrollIntoViewIfNeeded();

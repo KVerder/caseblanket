@@ -21,6 +21,24 @@ export interface CfdThermal {
  *   'coolant' inlet + 2·(mean − inlet) / radiator effectiveness
  *   'zone'    air over the board (the board heat source's mean), else the case average
  */
+/**
+ * The airflow model's score from a 3D run's components: heat-weighted a/(a + 1) of each part's
+ * adequacy (allowed rise over its air's rise), so 0.5 means every part sits exactly at its limit.
+ */
+export function score3D(th: CfdThermal, ambientC: number): number {
+  let w = 0;
+  let acc = 0;
+  for (const c of th.components) {
+    const air = c.tempC - ambientC - c.selfRiseK;
+    const allowed = c.limitC - ambientC - c.selfRiseK;
+    const a = allowed <= 0 ? 0 : Math.min(50, allowed / Math.max(air, 1e-6));
+    const wt = Math.max(c.heatW, 30);
+    w += wt;
+    acc += wt * (a / (a + 1));
+  }
+  return w > 0 ? acc / w : 1;
+}
+
 export function cfdComponents(design: Design, cfg: DesignConfig, st: FlowStats): CfdThermal {
   const amb = cfg.prefs.ambientC;
   const eff = Math.max(0.05, cfg.advanced.radEffectiveness);

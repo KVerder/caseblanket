@@ -240,8 +240,19 @@ export function Checks({ d }: { d: Design }) {
   );
 }
 
-export function Candidates({ result, selected, onSelect }: { result: SolveResult; selected: string | null; onSelect: (id: string) => void }) {
+export function Candidates({
+  result,
+  selected,
+  onSelect,
+  rank3d,
+}: {
+  result: SolveResult;
+  selected: string | null;
+  onSelect: (id: string) => void;
+  rank3d?: { done: number; total: number } | null;
+}) {
   const best = result.designs[0];
+  const in3d = result.designs.some((d) => d.check3D);
   return (
     <section className="candidates" aria-label="Alternative designs">
       <div className="section-head">
@@ -250,6 +261,16 @@ export function Candidates({ result, selected, onSelect }: { result: SolveResult
           {result.stats.evaluated} layouts in {(result.stats.ms / 1000).toFixed(1)} s
         </span>
       </div>
+      {rank3d && (
+        <p className="sim-status small" role="status" id="rank3d-status">
+          <span className="spinner" aria-hidden="true" /> Ranking in 3D: {rank3d.done} of {rank3d.total} simulated
+        </p>
+      )}
+      {in3d && !rank3d && (
+        <p className="muted small" id="rank3d-note">
+          Ranked by short 3D simulations (cooling) with size and noise as before; each shows the tightest part's share of its budget left in 3D.
+        </p>
+      )}
       <ul>
         {result.designs.map((d) => {
           const ol = outline(d);
@@ -280,6 +301,7 @@ export function Candidates({ result, selected, onSelect }: { result: SolveResult
                     <span style={{ width: `${Math.round(d.flow.score * 100)}%` }} />
                   </span>
                   airflow {Math.round(d.flow.score * 100)}
+                  {d.check3D && ` · 3D: ${Math.round(d.check3D.worstMargin * 100)}% left`}
                 </span>
               </button>
             </li>

@@ -103,6 +103,12 @@ export function FlowPanel({ cfg, setCfg, design }: { cfg: DesignConfig; setCfg: 
       </Section>
 
       <Section title="Fans and radiators">
+        <Toggle
+          id="rank3d"
+          label="Rank the shortlist by 3D simulation (about 1–2 min after each solve)"
+          checked={p.rank3D === true}
+          onChange={(v) => up((d) => void (d.prefs.rank3D = v))}
+        />
         <Toggle id="flow-tilt" label="Tilted radiators and case fans (15°, 30°, 45°)" checked={p.allowTilt} onChange={(v) => up((d) => void (d.prefs.allowTilt = v))} />
         <Segmented
           label="Case fans"
