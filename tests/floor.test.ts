@@ -44,6 +44,8 @@ describe('the surface under the case', () => {
       const cfg = defaultConfig();
       cfg.prefs.orientation = 'console';
       cfg.prefs.feetHeight = feet;
+      // Keep the board's air from deciding the layout, so both runs pick the same one.
+      cfg.advanced.limits.caseAir = 80;
       return solve(cfg, { wrapMetrics: false }).designs[0];
     };
     const short = at(8);
@@ -51,6 +53,8 @@ describe('the surface under the case', () => {
     const fanned = short.vents.some((v) => v.wall === short.bottomWall && v.groupId);
     if (!fanned) return;
     // Default console layout: GPU radiator and card fan in the bottom panel (about 4 K apart, measured).
-    expect(tall.flow.worstHeadroomK - short.flow.worstHeadroomK).toBeGreaterThan(1);
+    // Measured on the GPU core, which those vents cool (the tightest part may be the board's air).
+    const gpu = (d: typeof short) => d.flow.components.find((c) => c.id === 'gpu')!.headroomK;
+    expect(gpu(tall) - gpu(short)).toBeGreaterThan(1);
   });
 });

@@ -46,6 +46,33 @@ export interface ComponentSpec {
   air: AirTerm;
   /** Heat used to weight the score. */
   heatW: number;
+  /**
+   * Rated on the air in a pocket around it instead of the mixed zone (the board): the pocket's own
+   * heat leaves with the air the jets landing on it sweep through (see `pocketRise`).
+   */
+  pocketHeatW?: number;
+}
+
+/**
+ * Share of a jet's flow that sweeps a pocket it lands on, and the pocket's exchange with the mixed
+ * zone (m³/s). Fitted to the 3D simulation's air over the board in 31 layouts of three builds
+ * (default parts, tower cooler with an air-cooled card, AIO CPU cooler): the mixed-zone model put
+ * that air 9–10 K too cool on average (RMSE 10–12 K); with the pocket the bias is about 0 and the
+ * RMSE 3–6 K. The fit leaves the zone's through-flow out (no gain from it) and gives jets little
+ * weight, so this mostly corrects the level, not the ranking of layouts. Estimates.
+ */
+export const POCKET_SWEEP = 0.02;
+export const POCKET_EXCHANGE = 0.002;
+
+/** Air rise in a pocket swept by jets (flow m³/s, exit rise K), with `heatW` of its own. */
+export function pocketRise(zoneRise: number, heatW: number, jets: { q: number; rise: number }[]): number {
+  let Q = POCKET_EXCHANGE;
+  let QT = POCKET_EXCHANGE * zoneRise;
+  for (const j of jets) {
+    Q += POCKET_SWEEP * j.q;
+    QT += POCKET_SWEEP * j.q * j.rise;
+  }
+  return QT / Q + heatW / (RHO * CP * Q);
 }
 
 export interface FanGroupInput {
@@ -89,7 +116,21 @@ export interface LinkInput {
   label: string;
 }
 
+/**
+ * A fan's discharge landing on something inside its zone (see jets.ts): a fan group that breathes
+ * there (`toGroup`) or a component rated on the zone's air (`toComp`). `share` is the part of the
+ * jet's excess temperature over the zone that reaches it.
+ */
+export interface JetLink {
+  from: string;
+  toGroup?: string;
+  toComp?: string;
+  share: number;
+}
+
 export interface NetworkInput {
+  /** Jets that land on parts: local air instead of the mixed zone's. */
+  jets?: JetLink[];
   zones: ZoneInput[];
   links: LinkInput[];
   groups: FanGroupInput[];
@@ -117,6 +158,8 @@ export interface GroupResult {
   /** Adequacy of the component this group cools (2 when it cools nothing). */
   adequacy: number;
   coolantRiseC?: number;
+  /** Part of the inlet rise that is another fan's jet landing on this one's intake, K. */
+  jetRiseC?: number;
   pressurePa: number;
   /** Fan speed as a share of its maximum. */
   speed: number;
@@ -304,10 +347,35 @@ export function solveNetwork(input: NetworkInput): FlowResult {
     b[k] += z.heatW / (RHO * CP);
     if (passive[k] > 0) add(k, passive[k], -1, 0);
   });
+  // Jets caught by a fan that takes them out of the zone (an exhaust, or into another zone) never
+  // mix in: that share of the blowing group's flow bypasses the zone (a short circuit).
+  const jets = (input.jets ?? []).filter((j) => groups.some((g) => g.id === j.from));
+  const gIdx = new Map(groups.map((g, i) => [g.id, i]));
+  const bypass = new Array(groups.length).fill(0);
+  /** Share of a group's intake that is another group's jet: [from index, share]. */
+  const fed: [number, number][][] = groups.map(() => []);
+  for (const j of jets) {
+    if (!j.toGroup) continue;
+    const a = gIdx.get(j.from)!;
+    const bI = gIdx.get(j.toGroup);
+    if (bI === undefined || a === bI) continue;
+    const z = zoneOf(groups[a].sink);
+    if (z < 0 || zoneOf(groups[bI].source) !== z || q[a] <= 1e-9 || q[bI] <= 1e-9) continue;
+    const m = Math.min(j.share * q[a], q[bI], q[a] - bypass[a]);
+    if (m <= 0) continue;
+    fed[bI].push([a, m / q[bI]]);
+    if (zoneOf(groups[bI].sink) !== z) bypass[a] += m;
+  }
   groups.forEach((g, i) => {
     const s = zoneOf(g.source);
     const t = zoneOf(g.sink);
     if (t < 0) return;
+    if (bypass[i] > 0 && s !== t && q[i] > 1e-9) {
+      // Only what is not caught straight away enters the zone, at the group's exit temperature.
+      const qm = q[i] - bypass[i];
+      if (qm > 1e-9) add(t, qm, s, g.heatW / (RHO * CP * q[i]));
+      return;
+    }
     if (s === t || q[i] <= 1e-9) {
       // A fan recirculating inside one zone (or stalled): its heat stays in the zone.
       b[t] += g.heatW / (RHO * CP);
@@ -393,6 +461,32 @@ export function solveNetwork(input: NetworkInput): FlowResult {
     const margin = (c.limitC - tempC) / Math.max(1, c.limitC - amb);
     return { id: c.id, label: c.label, tempC, limitC: c.limitC, headroomK: c.limitC - tempC, margin, adequacy: Math.min(adequacy, 50), heatW: c.heatW, via, air: c.air, selfRiseK: c.selfRiseK };
   };
+  // Jets: a group fed by another's jet breathes a mix of the jet and the zone (passes, since a fed
+  // group may blow a jet of its own).
+  if (fed.some((f) => f.length))
+    for (let pass = 0; pass < 3; pass++)
+      groups.forEach((g, i) => {
+        if (!fed[i].length) return;
+        const gr = groupResults[i];
+        const zr = riseAt(g.source);
+        const base = gr.inletRiseC - (gr.jetRiseC ?? 0);
+        const jet = fed[i].reduce((acc, [a, f]) => acc + f * (groupResults[a].exitRiseC - zr), 0);
+        gr.jetRiseC = jet;
+        gr.inletRiseC = base + jet;
+        gr.exitRiseC = gr.inletRiseC + gr.deltaC;
+        if (gr.coolantRiseC !== undefined) gr.coolantRiseC = gr.inletRiseC + gr.deltaC / Math.max(0.05, input.radEffectiveness);
+      });
+  /** Air a zone component sees: the zone's, plus what jets bring where they land on it, or its pocket's. */
+  const compAir = (c: ComponentSpec, k: number) => {
+    const on = jets.filter((j) => j.toComp === c.id && zoneOf(groups[gIdx.get(j.from)!].sink) === k);
+    if (c.pocketHeatW !== undefined)
+      return pocketRise(
+        rise[k],
+        c.pocketHeatW,
+        on.map((j) => ({ q: j.share * q[gIdx.get(j.from)!], rise: groupResults[gIdx.get(j.from)!].exitRiseC })),
+      );
+    return rise[k] + on.reduce((acc, j) => acc + j.share * (groupResults[gIdx.get(j.from)!].exitRiseC - rise[k]), 0);
+  };
   const components: ComponentResult[] = [];
   groups.forEach((g, i) => {
     const c = g.component;
@@ -413,7 +507,7 @@ export function solveNetwork(input: NetworkInput): FlowResult {
     components.push(res);
   });
   zones.forEach((z, k) => {
-    for (const c of z.components) components.push(rate(c, rise[k], z.id));
+    for (const c of z.components) components.push(rate(c, compAir(c, k), z.id));
   });
 
   // Diminishing returns: a = 1 (exactly at the limit) scores 0.5, a = 3 scores 0.75.
@@ -525,6 +619,7 @@ export interface FlowInput {
   targetRiseC: number;
   radEffectiveness: number;
   caseComponents?: ComponentSpec[];
+  jets?: JetLink[];
   /** Leakage on top of the seams, m² (glued joints of a printed shell). */
   extraLeakArea?: number;
   /** Height of the case's openings, m (stack exchange). */
@@ -551,6 +646,7 @@ export function flowNetwork(input: FlowInput): NetworkInput {
     ],
     links: [],
     groups,
+    jets: input.jets,
     ambientC: input.ambientC,
     radEffectiveness: input.radEffectiveness,
     internalRecirculation: input.internalRecirculation,

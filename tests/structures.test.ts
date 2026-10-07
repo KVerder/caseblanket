@@ -47,6 +47,8 @@ describe('structures, round 2 (estimates)', () => {
 
   it('a bell-mouth helps a design whose fans are held back by the noise budget', () => {
     const cfg = airCooled(24);
+    // With the board's air the tightest part, no fan structure can help; test the fan-limited case.
+    cfg.advanced.limits.caseAir = 80;
     const d = solve(cfg, { wrapMetrics: false }).designs[0];
     const { results } = evaluateStructures(d, cfg);
     const bell = results.find((r) => r.kind === 'bell-mouth');

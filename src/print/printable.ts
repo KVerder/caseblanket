@@ -397,8 +397,11 @@ export function planPieces(design: Design, opt: PrintOptions, bounds?: Box, fiel
     if (!field || counts[a] < 2) return xs;
     const slack = Math.min(30, (max - step) / 2);
     const [b1, b2] = [0, 1, 2].filter((x) => x !== a);
+    // Part faces across this axis: the shell steps there, and a cut a few mm off a step leaves chips.
+    const faces = design.parts.flatMap((p) => [p.body.min[a], p.body.max[a], p.clearance.min[a], p.clearance.max[a]]);
     const grazing = (at: number) => {
       let n = 0;
+      for (const f of faces) if (Math.abs(f - at) < 12) n += 25;
       const q: Vec3 = [0, 0, 0];
       for (let u = lo[b1]; u <= hi[b1]; u += 4)
         for (let v = lo[b2]; v <= hi[b2]; v += 4) {

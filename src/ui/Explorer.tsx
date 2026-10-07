@@ -295,7 +295,7 @@ export function Explorer({
           ? ` Scored by 3D simulations of ${Object.keys(scored3d).length} designs, each run until its temperatures settle (1.4–8 s of airflow; a gain between two designs is uncertain by about ±55 %).`
           : caseAirHeated
             ? ` Scored by the fast airflow model. With ${cfg.parts.cooler.kind === 'air-tower' ? 'a tower cooler' : 'an air-cooled card'} heating the case air, its ranking agrees poorly with the 3D simulation (where the cooler sits against the vents matters, and the model can't see it): score the frontier in 3D before choosing.`
-            : ' Scored by the fast airflow model; with the heat leaving through radiators its ranking agrees well with the 3D simulation (rank correlation 0.95 in tests).'}
+            : " Scored by the fast airflow model. Its temperatures are calibrated against the 3D simulation, but its ranking of layouts is not: in tests on the built-in parts it agreed weakly with 3D on the tightest part (rank correlation 0–0.4, where 3D runs on two grids agree at 0.8), because where the air goes inside the case decides most of the difference. Score the frontier in 3D before choosing."}
         {outs.length > 0 && ` ${outs.length} design${outs.length > 1 ? 's' : ''} ${yMode === 'noise' ? "can't keep every part under its limit at any speed" : "can't meet the noise budget"} (hollow, along the bottom).`}
       </p>
 

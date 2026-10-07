@@ -4,7 +4,7 @@ import { bpf, fanAcoustics, fanLw, HEMISPHERE_DB, obstructionPenalty, sumDb, ven
 import { coolestWithin, noiseTotal, quietestSafe, type NoiseResult, type SpeedControl } from './fanspeeds';
 import { CASE_LEAK, PARTITION_THICKNESS, chamberLayouts, ventAreaIn, wallShare, type ChamberLayout } from './chambers';
 import { HOSE_MIN_BEND, hosePaths, minBendRadius, pathLength } from './hoses';
-import { flowNetwork, floorGapZeta, perforatedPlateZeta, solveNetwork, type NetworkInput, type ComponentSpec, type Endpoint, type FanGroupInput, type FlowResult, type LossTerm } from './airflow';
+import { flowNetwork, floorGapZeta, perforatedPlateZeta, solveNetwork, type NetworkInput, type ComponentSpec, type Endpoint, type FanGroupInput, type FlowResult, type JetLink, type LossTerm } from './airflow';
 import {
   axisOf,
   localToWorld,
@@ -21,6 +21,7 @@ import {
   type Vec3,
 } from './geometry';
 import { tiltMeanGap, type Tilt } from './tilt';
+import { fanJet, psuJet, traceJets, type JetHit } from './jets';
 import { applyFlow, DEEP_PLENUM, type FlowFan } from './flow';
 import { perforation } from '../model/perforation';
 import { allowedFaceDirs, boardStack, isTwoLayer, type ItemDef, type ItemKind, type LayerId, type Profile } from './items';
@@ -511,7 +512,11 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     const heatByPart: Record<string, number> = { board: bp.heatW };
     for (const e of cfg.parts.extras) heatByPart[`extra-${e.id}`] = (heatByPart[`extra-${e.id}`] ?? 0) + e.heatW;
     const compPart: Record<string, string> = { 'case-air': 'board' };
-    const caseComps: ComponentSpec[] = [{ id: 'case-air', label: 'Board & drives (case air)', limitC: tLimits.caseAir, selfRiseK: 0, air: 'zone', heatW: Math.max(30, bp.heatW + extrasW) }];
+    // The board is rated on the air over it: a pocket swept only by the jets that land on it (the
+    // downdraft cooler's, a fan or radiator blowing at it), stagnant when none does.
+    const caseComps: ComponentSpec[] = [
+      { id: 'case-air', label: 'Board & drives (case air)', limitC: tLimits.caseAir, selfRiseK: 0, air: 'zone', heatW: Math.max(30, bp.heatW + extrasW), pocketHeatW: bp.heatW },
+    ];
     if (gpuSpec.cardFan) {
       const atWall = gpu.faceAtWall && vents.some((v) => v.groupId === 'gpu');
       const losses: LossTerm[] = [
@@ -704,6 +709,38 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     }
   }
   const holeD = perforation(vs.id).size;
+  // Where each fan's discharge lands (jets.ts): traced once for every part that could blow into
+  // the case; each network keeps the jets of the groups that do, at its fan directions.
+  const jetHits: JetHit[] = traceJets(
+    [
+      ...dirParts.filter((p) => p.faceAtWall).map(fanJet),
+      ...(acAtWall ? [] : [psuJet(psu, acDir)]),
+    ].filter((j) => j !== null),
+    parts,
+    interior,
+  );
+  const jetLinks = (dirs: ('in' | 'out')[], groups: FanGroupInput[], caseCompIds: string[]): JetLink[] => {
+    const out: JetLink[] = [];
+    const has = (id: string) => groups.some((g) => g.id === id && g.source !== 'outside');
+    // A downdraft cooler blows straight down through its fins onto the board.
+    if (cooler.kind === 'air-downdraft' && groups.some((g) => g.id === 'cpu') && caseCompIds.includes('case-air')) out.push({ from: 'cpu', toComp: 'case-air', share: 1 });
+    for (const h of jetHits) {
+      const di = dirParts.findIndex((p) => p.id === h.from);
+      if (di >= 0 && dirs[di] !== 'in') continue;
+      const target = parts.find((p) => p.id === h.part)!;
+      const link = (to: Partial<JetLink>) => out.push({ from: h.from, share: h.share, ...to });
+      if (target.kind === 'board') {
+        if (caseCompIds.includes('case-air')) link({ toComp: 'case-air' });
+        if (has('cpu')) link({ toGroup: 'cpu' });
+      } else if (target.kind === 'gpu') {
+        if (has('gpu-card')) link({ toGroup: 'gpu-card' });
+        for (const id of ['gpu', 'gpu-mem']) if (caseCompIds.includes(id)) link({ toComp: id });
+      } else if (target.kind === 'psu' || target.kind === 'rad-cpu' || target.kind === 'rad-gpu' || target.kind === 'case-fan') {
+        if (has(target.id)) link({ toGroup: target.id });
+      } else if (caseCompIds.includes('case-air')) link({ toComp: 'case-air' });
+    }
+    return out;
+  };
   const networkAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null, speeds?: Record<string, number>): NetworkInput =>
     applyFlow(networkRaw(profileId, dirs, layout, speeds), prefs.flow, flowFans, vs.openRatio, holeD);
   const networkRaw = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null, speeds?: Record<string, number>): NetworkInput => {
@@ -739,6 +776,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
           heightM: (c.box.max[upAxis] - c.box.min[upAxis]) / 1000,
         })),
         links: layout.links.map((l) => ({ ...l, zeta: 2.5 })),
+        jets: jetLinks(dirs, groups, net.caseComps.map((c) => c.id)),
         groups: groups.map((g) => ({ ...g, source: mapEnd(g.source, g.id), sink: mapEnd(g.sink, g.id) })),
         ambientC: prefs.ambientC,
         radEffectiveness: advanced.radEffectiveness,
@@ -754,6 +792,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       targetRiseC: prefs.targetRiseC,
       radEffectiveness: advanced.radEffectiveness,
       caseComponents: net.caseComps,
+      jets: jetLinks(dirs, groups, net.caseComps.map((c) => c.id)),
       extraLeakArea: jointLeak,
       heightM: interior[upAxis] / 1000,
       internalRecirculation: advanced.internalRecirculation,
