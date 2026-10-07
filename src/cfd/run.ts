@@ -137,7 +137,7 @@ export function optimiseShaping(design: Design, cfg: DesignConfig, progress?: (d
   for (const id of flipCandidates(design)) {
     const part = design.parts.find((p) => p.id === id);
     candidates.push({
-      label: `Reverse the ${part?.label ?? id} fans (${part?.airflow === 'in' ? 'intake → exhaust' : 'exhaust → intake'})`,
+      label: `Reverse the ${part?.label ?? id} fans (${part?.airflow === 'in' ? 'intake → exhaust' : part?.airflow === 'through' ? 'blowing away from its panel instead of toward it' : 'exhaust → intake'})`,
       kind: 'flip',
       weightKg: 0,
       apply: (s) => ({ ...s, flipped: [...s.flipped, id] }),

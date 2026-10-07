@@ -22,8 +22,8 @@ import {
 } from './geometry';
 import { tiltMeanGap, type Tilt } from './tilt';
 import { fanJet, psuJet, traceJets, type JetHit } from './jets';
-import { applyFlow, DEEP_PLENUM, type FlowFan } from './flow';
-import { perforation } from '../model/perforation';
+import { applyFlow, DEEP_PLENUM, ventZeta, type FlowFan } from './flow';
+import { hydraulicDiameter, perforation } from '../model/perforation';
 import { allowedFaceDirs, boardStack, isTwoLayer, type ItemDef, type ItemKind, type LayerId, type Profile } from './items';
 import { interiorThickness, type PackNode } from './pack';
 import type { WrapMetrics } from './shrinkwrap';
@@ -441,7 +441,8 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
   };
 
   // ---- airflow groups
-  const zVent = perforatedPlateZeta(vs.openRatio) + (prefs.dustFilters ? advanced.dustFilterLossK : 0);
+  const plate = ventZeta(vs.openRatio, perforation(vs.id), prefs.wallThickness, false);
+  const zVent = plate + (prefs.dustFilters ? advanced.dustFilterLossK : 0);
   const ventAreaFor = (groupId: string, w?: Dir) =>
     vents.filter((v) => v.groupId === groupId && (w === undefined || v.wall === w)).reduce((s2, v) => s2 + rectArea(v.rect), 0) * MM2;
   const prox = (gap: number, fan: FanSpec): number => {
@@ -608,7 +609,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     if (p.faceAtWall) losses.push({ label: 'vent', zeta: zVent, area: ventAreaFor(p.id, p.face) }, ...floorGap(p.id, p.face));
     else losses.push({ label: 'blocked face', zeta: 40, area: coreArea });
     if (dir === 'through') {
-      losses.push({ label: 'far vent', zeta: perforatedPlateZeta(vs.openRatio), area: ventAreaFor(p.id, opposite(p.face!)) || coreArea }, ...floorGap(p.id, opposite(p.face!)));
+      losses.push({ label: 'far vent', zeta: plate, area: ventAreaFor(p.id, opposite(p.face!)) || coreArea }, ...floorGap(p.id, opposite(p.face!)));
     } else {
       const plen = cfg.advanced.radPlenumGap + profile.extraGap + (prefs.flow?.deepPlenums ? DEEP_PLENUM : 0);
       const perim = 2 * (rad.length + rad.width);
@@ -653,7 +654,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     combos.push(c);
   }
   if (combos.length === 0) combos.push([]);
-  const passiveZeta = perforatedPlateZeta(vs.openRatio) + (prefs.dustFilters ? advanced.dustFilterLossK : 0);
+  const passiveZeta = plate + (prefs.dustFilters ? advanced.dustFilterLossK : 0);
   /** Share of a passive vent's area that still counts with the floor gap in series (1 off the bottom). */
   const passiveShare = (v: Vent) =>
     v.wall === bottomWall ? Math.sqrt(passiveZeta / (passiveZeta + floorGapZeta(rectArea(v.rect), rectPerimeter(v.rect), feet, footprintPerimeter))) : 1;
@@ -708,7 +709,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
       flowFans.push({ id: p.id, fan, count: n, gap: p.faceGap + tiltGap(p), atWall: p.faceAtWall, tilted: !!p.tilt && !mold, ductable: p.faceAtWall && p.mode !== 'through' && p.faceGap > 2 && !p.tilt, discs });
     }
   }
-  const holeD = perforation(vs.id).size;
+  const holeD = hydraulicDiameter(perforation(vs.id));
   // Where each fan's discharge lands (jets.ts): traced once for every part that could blow into
   // the case; each network keeps the jets of the groups that do, at its fan directions.
   const jetHits: JetHit[] = traceJets(
@@ -742,7 +743,7 @@ export function evaluate(node: PackNode, ctx: EvalContext, index: number): Desig
     return out;
   };
   const networkAt = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null, speeds?: Record<string, number>): NetworkInput =>
-    applyFlow(networkRaw(profileId, dirs, layout, speeds), prefs.flow, flowFans, vs.openRatio, holeD);
+    applyFlow(networkRaw(profileId, dirs, layout, speeds), prefs.flow, flowFans, vs.openRatio, holeD, prefs.wallThickness / holeD);
   const networkRaw = (profileId: LoadProfileId, dirs: ('in' | 'out')[], layout?: ChamberLayout | null, speeds?: Record<string, number>): NetworkInput => {
     const key = `${profileId}|${dirs.join(',')}`;
     let cached = netCache.get(key);
