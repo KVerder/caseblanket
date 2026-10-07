@@ -23,12 +23,23 @@ export interface Shaping {
   partitions?: Partition[];
   /** Leave out the design's own partitions (to check them against one chamber). */
   noChambers?: boolean;
+  /**
+   * Turning vanes under intake fans: a cascade of slats just inside the fan that turns its jet
+   * VANE_ANGLE from the fan axis toward `toward` (e.g. across the board's stagnant pocket).
+   * 3D simulation only, for trials: on the default parts (8 and 10 mm grids) it changed the
+   * tightest part's margin by less than the noise, so it is neither in the Flow tab nor printed.
+   */
+  vanes?: { part: string; toward: Dir }[];
 }
 
 export const NO_SHAPING: Shaping = { louvres: [], ducts: [], flipped: [] };
 
 const RHO = 1.2; // kg/m³
 export const LOUVRE_ANGLE = (40 * Math.PI) / 180;
+/** Turn of an intake fan's turning-vane cascade from the fan axis. */
+export const VANE_ANGLE = (45 * Math.PI) / 180;
+/** Depth of the vane cascade along the fan axis, mm (two cells of the 3D grid at 8–10 mm). */
+export const VANE_DEPTH = 20;
 const SWIRL = 0.35;
 
 export interface SceneOptions {
@@ -556,6 +567,21 @@ export function buildScene(design: Design, cfg: DesignConfig, shapingIn: Shaping
     louvres.push({ cells: Int32Array.from(cells), dir: louvreDirection(v.wall, l.toward), normal: dirVec(v.wall) as [number, number, number] });
   }
 
+  // ------------------------------------------------ turning vanes under intake fans
+  for (const v of shaping.vanes ?? []) {
+    const part = design.parts.find((p) => p.id === v.part);
+    if (!part || part.face === undefined || fanDir(part) !== 'in') continue;
+    const box = vaneBox(part);
+    const a = axisOf(part.face);
+    if (axisOf(v.toward) === a) continue;
+    const cells = cellsIn(box).filter((c) => cellType[c] !== CELL_SOLID && !wallCell[c] && fieldVals[c] < -wall);
+    if (!cells.length) continue;
+    // The fan blows away from its wall: −face.
+    const normal = dirVec(part.face).map((x) => -x) as [number, number, number];
+    const tan = dirVec(v.toward);
+    louvres.push({ cells: Int32Array.from(cells), dir: [0, 1, 2].map((k) => Math.cos(VANE_ANGLE) * normal[k] + Math.sin(VANE_ANGLE) * tan[k]) as [number, number, number], normal });
+  }
+
   // Heat sources as boxes (the bounding box of their cells).
   for (const src of heat) {
     if (!src.cells.length || src.watts <= 0) continue;
@@ -644,6 +670,46 @@ function ventCentre(design: Design, v: Design['vents'][number]): Vec3 {
   p[xa] = (v.rect.x0 + v.rect.x1) / 2;
   p[ya] = (v.rect.y0 + v.rect.y1) / 2;
   return p;
+}
+
+/** The slab a fan's turning vanes fill: the fan's footprint, VANE_DEPTH deep on its inner face. */
+export function vaneBox(part: PlacedPart): Box {
+  const a = axisOf(part.face!);
+  const b: Box = { min: [...part.body.min] as Vec3, max: [...part.body.max] as Vec3 };
+  if (signOf(part.face!) > 0) {
+    b.max[a] = part.body.min[a];
+    b.min[a] = part.body.min[a] - VANE_DEPTH;
+  } else {
+    b.min[a] = part.body.max[a];
+    b.max[a] = part.body.max[a] + VANE_DEPTH;
+  }
+  return b;
+}
+
+/**
+ * Intake fans whose jet vanes could turn toward the board, with the in-plane direction from the
+ * fan to the board's centre (the board pocket is where air stagnates without a jet across it).
+ */
+export function vaneCandidates(design: Design): { part: string; toward: Dir }[] {
+  const board = design.parts.find((p) => p.kind === 'board');
+  if (!board) return [];
+  const bc = [0, 1, 2].map((k) => (board.body.min[k] + board.body.max[k]) / 2);
+  const out: { part: string; toward: Dir }[] = [];
+  for (const p of design.parts) {
+    if (p.kind !== 'case-fan' || p.tilt || p.face === undefined || p.airflow !== 'in') continue;
+    const [xa, ya] = wallAxes(axisOf(p.face));
+    const pc = [0, 1, 2].map((k) => (p.body.min[k] + p.body.max[k]) / 2);
+    const dx = bc[xa] - pc[xa];
+    const dy = bc[ya] - pc[ya];
+    const ax = Math.abs(dx) >= Math.abs(dy) ? xa : ya;
+    const d = ax === xa ? dx : dy;
+    if (Math.abs(d) < 20) continue; // already over the board: nothing to turn
+    // The cascade must sit in free air: never inside another part's body.
+    const vb = vaneBox(p);
+    if (design.parts.some((q) => q !== p && [0, 1, 2].every((k) => q.body.min[k] < vb.max[k] - 1 && q.body.max[k] > vb.min[k] + 1))) continue;
+    out.push({ part: p.id, toward: (ax * 2 + (d < 0 ? 1 : 0)) as Dir });
+  }
+  return out;
 }
 
 /** Exhaust vents the optimiser may fit with deflectors, each pointing away from the intakes. */
