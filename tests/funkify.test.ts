@@ -5,6 +5,15 @@ import { solve } from '../src/solver/solve';
 import { meshShell } from '../src/solver/shrinkwrap';
 
 describe('funkify', () => {
+  it('searches with shrinkwrap mode off, since it would override the sculpted shells', () => {
+    const cfg = defaultConfig();
+    cfg.prefs.mold = true;
+    cfg.prefs.rank3D = true;
+    const b = funkBase(cfg);
+    expect(b.prefs.mold).toBe(false);
+    expect(b.prefs.rank3D).toBe(false);
+  });
+
   it('scores a pebble as more organic than the same layout in a box', () => {
     const cfg = funkBase(defaultConfig());
     const d = solve(cfg, { wrapMetrics: false }).designs[0];

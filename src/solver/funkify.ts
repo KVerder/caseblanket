@@ -74,6 +74,10 @@ export function funkBase(cfg: DesignConfig): DesignConfig {
       chambers: 'auto',
       allowTilt: true,
       flow: { ...ALL_FLOW },
+      // Funkify's shapes are the shell: shrinkwrap mode (which overrides the shell) is off, and
+      // its own 3D check replaces the shortlist's.
+      mold: false,
+      rank3D: false,
     },
   };
 }
@@ -186,7 +190,7 @@ export function funkify(cfg: DesignConfig, opts: { picks?: number; check3d?: boo
   const nPicks = opts.picks ?? 4;
   const base = funkBase(cfg);
   opts.progress?.(0, 1, 'Searching for the coolest layouts');
-  const res = solve(base, { wrapMetrics: false });
+  const res = solve(base, { wrapMetrics: false, onProgress: (done, total) => opts.progress?.(done, total, 'Searching for the coolest layouts') });
   const valid = res.space.filter((d) => !d.invalid);
   const pool = valid.length ? valid : res.space;
   const floor = pool.reduce((m, d) => Math.max(m, d.flow.worstMargin), -Infinity);

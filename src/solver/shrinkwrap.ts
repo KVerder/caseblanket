@@ -554,15 +554,38 @@ export function deadSpaceL(design: Design, cfg: DesignConfig, g: Grid): number {
  * shapes grown by the wall, counted on a coarse grid (no mesh, no closing).
  */
 export function moldEstimate(design: Design, cfg: DesignConfig, cell = 10): { volumeL: number; thickness: number } {
-  const need = neededField(design, cfg);
   const w = design.wall + SOFT_MIN;
   const pad = w + cell;
   const g = makeGrid([-pad, -pad, -pad], [design.interior[0] + pad, design.interior[1] + pad, design.interior[2] + pad], cell);
+  const [nx, ny] = g.n;
+  const hit = new Uint8Array(g.vals.length);
+  // Rasterised shape by shape (only the cells near each shape are visited): a box grown by w is
+  // marked whole, any other shape is tested inside its own bounds.
+  const mark = (b: Box, test?: (p: Vec3) => boolean) => {
+    const lo = [0, 1, 2].map((a) => Math.max(0, Math.ceil((b.min[a] - w - g.origin[a]) / cell)));
+    const hi = [0, 1, 2].map((a) => Math.min(g.n[a] - 1, Math.floor((b.max[a] + w - g.origin[a]) / cell)));
+    const p: Vec3 = [0, 0, 0];
+    for (let k = lo[2]; k <= hi[2]; k++)
+      for (let j = lo[1]; j <= hi[1]; j++)
+        for (let i = lo[0]; i <= hi[0]; i++) {
+          const id = i + nx * (j + ny * k);
+          if (hit[id]) continue;
+          if (test) {
+            p[0] = g.origin[0] + i * cell;
+            p[1] = g.origin[1] + j * cell;
+            p[2] = g.origin[2] + k * cell;
+            if (!test(p)) continue;
+          }
+          hit[id] = 1;
+        }
+  };
+  for (const sh of wrapShapes(design, cfg, 0, true)) mark(sh.box, sh.sdf ? (p) => sh.sdf!(p) <= w : undefined);
+  for (const h of routedPaths(design, cfg)) mark(hoseBox(h), (p) => hoseDistance(h, p) <= w);
   let n = 0;
   const lo: Vec3 = [Infinity, Infinity, Infinity];
   const hi: Vec3 = [-Infinity, -Infinity, -Infinity];
-  forEachPoint(g, (p) => {
-    if (need(p) > w) return;
+  forEachPoint(g, (p, id) => {
+    if (!hit[id]) return;
     n++;
     for (let a = 0; a < 3; a++) {
       lo[a] = Math.min(lo[a], p[a]);

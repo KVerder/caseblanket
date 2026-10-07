@@ -28,7 +28,8 @@ export function FunkifyPanel({ cfg, setCfg, onPick }: { cfg: DesignConfig; setCf
   };
   const apply = (prefs: Partial<DesignConfig['prefs']>, id: string) => {
     onPick(id);
-    setCfg(produce(cfg, (d) => void Object.assign(d.prefs, structuredClone(prefs))));
+    // Shrinkwrap mode would override the picked shell: applying a Funkify shape turns it off.
+    setCfg(produce(cfg, (d) => void Object.assign(d.prefs, structuredClone(prefs), { mold: false })));
   };
   const r = state.result;
 
@@ -46,10 +47,14 @@ export function FunkifyPanel({ cfg, setCfg, onPick }: { cfg: DesignConfig; setCf
         {FUNK_CFD_TOL} K of the coolest layout in a straight box. The look score is a stated heuristic: how much of the surface curves, how round it is, how calm
         the form is (no lumps), and its proportions against φ.
       </p>
-      {state.running && state.progress && (
-        <p className="small" role="status">
-          {state.progress.label}… ({state.progress.done} of {state.progress.total})
+      {state.running && (
+        <p className="sim-status small" role="status">
+          <span className="spinner" aria-hidden="true" /> {state.progress ? `${state.progress.label}… (${state.progress.done} of ${state.progress.total})` : 'Starting…'} About
+          30–60 s in all.
         </p>
+      )}
+      {cfg.prefs.mold && !state.running && (
+        <p className="muted small">Shrinkwrap mode is on; applying a shape turns it off, since it would override the shape.</p>
       )}
       {state.error && <p className="small error">Funkify failed: {state.error}</p>}
       {r && (
