@@ -37,6 +37,11 @@ export interface SceneOptions {
   /** Cell size, mm: overrides `cells` (the user's choice in the simulation panel). */
   cell?: number;
   margin?: number;
+  /**
+   * Release a radiator's heat evenly in its core cells (the earlier model) instead of exchanging it
+   * with coolant at the local air speed. For comparisons only.
+   */
+  uniformRadHeat?: boolean;
 }
 
 /** Which way is "up" in solver axes for the case orientation. */
@@ -268,6 +273,9 @@ export function buildScene(design: Design, cfg: DesignConfig, shapingIn: Shaping
   const fans: FanDisk[] = [];
   const heat: HeatSource[] = [];
   const groupFlow = (id: string) => design.flow.groups.find((g) => g.id === id);
+  /** Radiator cores exchange heat with their coolant (see HeatSource.exchanger). */
+  // Depth on the grid (as the core's drag is spread): the column the air crosses is that many cells.
+  const hx = (thickness: number) => (opts.uniformRadHeat ? undefined : { eff: cfg.advanced.radEffectiveness, thickness: Math.max(1, Math.round(thickness / h)) * h });
   const local = (part: PlacedPart, lo: Vec3, hi: Vec3) => localBoxToWorld(part.frame, part.body, lo, hi);
   const axisWorld = (part: PlacedPart, k: 0 | 1 | 2) => axisOf(part.frame.d[k]);
 
@@ -452,7 +460,7 @@ export function buildScene(design: Design, cfg: DesignConfig, shapingIn: Shaping
       setPorous(core, along, betaFor(zeta, rad.coreThickness), HIGH);
       for (const c of [...cellsInPart(part, [0, 0, 0], [16, wid, rad.coreThickness]), ...cellsInPart(part, [len - 16, 0, 0], [len, wid, rad.coreThickness])]) cellType[c] = CELL_SOLID;
       const g = groupFlow(part.id);
-      heat.push({ id: part.id, label: g?.label ?? part.label, cells: Int32Array.from(core), watts: g?.heatW ?? 0 });
+      heat.push({ id: part.id, label: g?.label ?? part.label, cells: Int32Array.from(core), watts: g?.heatW ?? 0, exchanger: hx(rad.coreThickness) });
       const blow = fanDir(part) === 'in' ? -1 : 1;
       const nF = part.fanCount ?? rad.fanCount;
       const start = (len - nF * fan.size) / 2;
@@ -473,7 +481,7 @@ export function buildScene(design: Design, cfg: DesignConfig, shapingIn: Shaping
       solidBox(local(part, [0, 0, 0], [16, wid, rad.coreThickness]));
       solidBox(local(part, [len - 16, 0, 0], [len, wid, rad.coreThickness]));
       const g = groupFlow(part.id);
-      heat.push({ id: part.id, label: g?.label ?? part.label, cells: Int32Array.from(core.filter((c) => cellType[c] !== CELL_SOLID)), watts: g?.heatW ?? 0 });
+      heat.push({ id: part.id, label: g?.label ?? part.label, cells: Int32Array.from(core.filter((c) => cellType[c] !== CELL_SOLID)), watts: g?.heatW ?? 0, exchanger: hx(rad.coreThickness) });
       // +e3 points at the vented wall: 'out'/'through' blow toward it, 'in' away from it.
       const blow = fanDir(part) === 'in' ? -1 : 1;
       const nF = part.fanCount ?? rad.fanCount;
